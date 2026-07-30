@@ -25,6 +25,9 @@ import {
   Stethoscope,
   CalendarCheck,
   Star,
+  Trophy,
+  BarChart3,
+  Coins,
   Moon,
   Sun,
 } from "lucide-react";
@@ -64,6 +67,9 @@ const NAV: NavItem[] = [
   { id: "technicians", label: "Technicians", icon: Stethoscope, group: "Technician Network" },
   { id: "tech-sessions", label: "Measurement Sessions", icon: CalendarCheck, group: "Technician Network" },
   { id: "reputation", label: "Reputation", icon: Star, group: "Technician Network" },
+  { id: "competitions", label: "Competitions", icon: Trophy, group: "Competitions" },
+  { id: "leaderboards", label: "Leaderboards", icon: BarChart3, group: "Competitions" },
+  { id: "prize-pools", label: "Prize Pools", icon: Coins, group: "Competitions" },
 ];
 
 export function Sidebar({

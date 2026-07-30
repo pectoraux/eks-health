@@ -8,6 +8,7 @@ export interface PlatformSnapshot {
   programs: unknown;
   health: unknown;
   technicians: unknown;
+  competitions: unknown;
 }
 
 export interface ApiResult<T> {

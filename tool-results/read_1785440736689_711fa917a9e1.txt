@@ -1,0 +1,772 @@
+     1→/**
+     2→ * Eks-Health Technician Network — Measurement Sessions
+     3→ *
+     4→ * A MeasurementSession is the immutable record of a single health-data
+     5→ * collection event: which participant, which technician, which program,
+     6→ * which measurements were taken, what evidence was captured, how it was
+     7→ * verified, where/when it happened, on what devices, who signed off, and
+     8→ * what audit trail it carries. Sessions are state machines that progress
+     9→ * through: scheduled → checked_in → in_progress → evidence_captured →
+    10→ * technician_signed → participant_confirmed → program_validated → verified
+    11→ * (with disputed / cancelled / failed terminal exits at any point).
+    12→ *
+    13→ * Signatures are REAL SHA-256 hashes computed from the canonical session
+    14→ * representation at signing time, anchoring the record cryptographically.
+    15→ */
+    16→
+    17→import "server-only";
+    18→import { createHash } from "node:crypto";
+    19→import {
+    20→  type SessionId,
+    21→  type AppointmentId,
+    22→  type TechnicianId,
+    23→  type PaymentIntentId,
+    24→  type SessionStatus,
+    25→  type AccountId,
+    26→  type ProgramId,
+    27→  type MeasurementId,
+    28→  type EvidenceId,
+    29→  type VerificationId,
+    30→  type ChainOfCustodyId,
+    31→  type DeviceId,
+    32→  TechnicianError,
+    33→  TECHNICIAN_EVENTS,
+    34→  asSessionId,
+    35→} from "../core";
+    36→import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
+    37→import { getTechnicians } from "../profiles";
+    38→
+    39→// ---------------------------------------------------------------------------
+    40→// Signature & location
+    41→// ---------------------------------------------------------------------------
+    42→
+    43→export type SignatureMethod = "digital" | "biometric" | "witnessed";
+    44→
+    45→export interface SessionSignature {
+    46→  readonly signedBy: AccountId;
+    47→  readonly signedAt: string;
+    48→  /** SHA-256 of the canonical session data at signing time. */
+    49→  readonly signatureHash: string;
+    50→  readonly method: SignatureMethod;
+    51→}
+    52→
+    53→export interface SessionLocation {
+    54→  readonly lat: number;
+    55→  readonly lon: number;
+    56→  readonly label?: string;
+    57→}
+    58→
+    59→// ---------------------------------------------------------------------------
+    60→// Measurement session
+    61→// ---------------------------------------------------------------------------
+    62→
+    63→export interface MeasurementSession {
+    64→  readonly id: SessionId;
+    65→  readonly participantId: AccountId;
+    66→  readonly technicianId: TechnicianId;
+    67→  readonly programId: ProgramId;
+    68→  readonly appointmentId?: AppointmentId;
+    69→  readonly requestedMeasurements: string[]; // schema IDs
+    70→  readonly recordedMeasurements: MeasurementId[];
+    71→  readonly evidenceIds: EvidenceId[];
+    72→  readonly verificationId?: VerificationId;
+    73→  readonly location?: SessionLocation;
+    74→  readonly scheduledAt: string;
+    75→  readonly startedAt?: string;
+    76→  readonly completedAt?: string;
+    77→  readonly deviceIds?: string[];
+    78→  readonly notes: string[];
+    79→  readonly technicianSignature?: SessionSignature;
+    80→  readonly participantSignature?: SessionSignature;
+    81→  readonly status: SessionStatus;
+    82→  readonly paymentIntentId?: PaymentIntentId;
+    83→  readonly auditReferences: string[];
+    84→  readonly chainOfCustodyId?: ChainOfCustodyId;
+    85→  readonly createdBy: AccountId;
+    86→  readonly createdAt: string;
+    87→  readonly updatedAt: string;
+    88→  readonly cancellationReason?: string;
+    89→  readonly failureReason?: string;
+    90→  readonly disputeReason?: string;
+    91→}
+    92→
+    93→// Session snapshot used for signature computation — the cryptographically
+    94→// anchored projection of the session at a point in time.
+    95→export interface SessionSnapshot {
+    96→  readonly id: SessionId;
+    97→  readonly participantId: AccountId;
+    98→  readonly technicianId: TechnicianId;
+    99→  readonly programId: ProgramId;
+   100→  readonly appointmentId?: AppointmentId;
+   101→  readonly requestedMeasurements: string[];
+   102→  readonly recordedMeasurements: string[];
+   103→  readonly evidenceIds: string[];
+   104→  readonly status: SessionStatus;
+   105→  readonly scheduledAt: string;
+   106→  readonly startedAt?: string;
+   107→  readonly location?: SessionLocation;
+   108→}
+   109→
+   110→/** A single state transition in the session's history. */
+   111→export interface SessionStep {
+   112→  readonly fromStatus: SessionStatus | "created";
+   113→  readonly toStatus: SessionStatus;
+   114→  readonly at: string;
+   115→  readonly actor?: AccountId;
+   116→  readonly reason?: string;
+   117→  readonly detail?: string;
+   118→}
+   119→
+   120→/** Materialized view of a session's terminal outcome. */
+   121→export type SessionOutcome =
+   122→  | { kind: "verified"; at: string }
+   123→  | { kind: "cancelled"; at: string; reason: string }
+   124→  | { kind: "failed"; at: string; reason: string }
+   125→  | { kind: "disputed"; at: string; reason: string }
+   126→  | { kind: "open"; currentStatus: SessionStatus };
+   127→
+   128→export interface SessionState {
+   129→  readonly session: MeasurementSession;
+   130→  readonly history: SessionStep[];
+   131→  readonly outcome: SessionOutcome;
+   132→}
+   133→
+   134→// ---------------------------------------------------------------------------
+   135→// State machine
+   136→// ---------------------------------------------------------------------------
+   137→
+   138→const VALID_TRANSITIONS: Record<SessionStatus, SessionStatus[]> = {
+   139→  scheduled: ["checked_in", "in_progress", "cancelled", "failed", "disputed"],
+   140→  checked_in: ["in_progress", "cancelled", "failed", "disputed"],
+   141→  in_progress: ["evidence_captured", "technician_signed", "cancelled", "failed", "disputed"],
+   142→  evidence_captured: ["technician_signed", "cancelled", "failed", "disputed"],
+   143→  technician_signed: ["participant_confirmed", "program_validated", "disputed", "cancelled", "failed"],
+   144→  participant_confirmed: ["program_validated", "disputed", "cancelled", "failed"],
+   145→  program_validated: ["verified", "disputed", "cancelled", "failed"],
+   146→  verified: [],
+   147→  disputed: ["program_validated", "cancelled", "failed", "verified"],
+   148→  cancelled: [],
+   149→  failed: [],
+   150→};
+   151→
+   152→// ---------------------------------------------------------------------------
+   153→// Create input
+   154→// ---------------------------------------------------------------------------
+   155→
+   156→export interface CreateSessionInput {
+   157→  readonly participantId: AccountId;
+   158→  readonly technicianId: TechnicianId;
+   159→  readonly programId: ProgramId;
+   160→  readonly appointmentId?: AppointmentId;
+   161→  readonly requestedMeasurements?: string[];
+   162→  readonly location?: SessionLocation;
+   163→  readonly scheduledAt: string;
+   164→  readonly deviceIds?: string[];
+   165→  readonly notes?: string[];
+   166→  readonly paymentIntentId?: PaymentIntentId;
+   167→  readonly chainOfCustodyId?: ChainOfCustodyId;
+   168→  readonly createdBy: AccountId;
+   169→}
+   170→
+   171→// ---------------------------------------------------------------------------
+   172→// Session manager
+   173→// ---------------------------------------------------------------------------
+   174→
+   175→export class SessionManager {
+   176→  private readonly sessions = new Map<SessionId, MeasurementSession>();
+   177→  private readonly history = new Map<SessionId, SessionStep[]>();
+   178→  private readonly byParticipant = new Map<AccountId, SessionId[]>();
+   179→  private readonly byTechnician = new Map<TechnicianId, SessionId[]>();
+   180→  private readonly byProgram = new Map<ProgramId, SessionId[]>();
+   181→  private readonly byAppointment = new Map<AppointmentId, SessionId[]>();
+   182→
+   183→  create(input: CreateSessionInput): MeasurementSession {
+   184→    const now = getClock().iso();
+   185→    const session: MeasurementSession = {
+   186→      id: asSessionId(generateId("sess_")),
+   187→      participantId: input.participantId,
+   188→      technicianId: input.technicianId,
+   189→      programId: input.programId,
+   190→      appointmentId: input.appointmentId,
+   191→      requestedMeasurements: input.requestedMeasurements ?? [],
+   192→      recordedMeasurements: [],
+   193→      evidenceIds: [],
+   194→      location: input.location,
+   195→      scheduledAt: input.scheduledAt,
+   196→      deviceIds: input.deviceIds,
+   197→      notes: input.notes ?? [],
+   198→      status: "scheduled",
+   199→      paymentIntentId: input.paymentIntentId,
+   200→      auditReferences: [],
+   201→      chainOfCustodyId: input.chainOfCustodyId,
+   202→      createdBy: input.createdBy,
+   203→      createdAt: now,
+   204→      updatedAt: now,
+   205→    };
+   206→    this.sessions.set(session.id, session);
+   207→    this.history.set(session.id, [
+   208→      { fromStatus: "created", toStatus: "scheduled", at: now, actor: input.createdBy },
+   209→    ]);
+   210→    this.indexBy(session);
+   211→    return session;
+   212→  }
+   213→
+   214→  get(id: SessionId): MeasurementSession | undefined {
+   215→    return this.sessions.get(id);
+   216→  }
+   217→
+   218→  list(filter?: {
+   219→    participantId?: AccountId;
+   220→    technicianId?: TechnicianId;
+   221→    programId?: ProgramId;
+   222→    appointmentId?: AppointmentId;
+   223→    status?: SessionStatus;
+   224→    from?: string;
+   225→    to?: string;
+   226→  }): MeasurementSession[] {
+   227→    let list = [...this.sessions.values()];
+   228→    if (filter?.participantId) list = list.filter((s) => s.participantId === filter.participantId);
+   229→    if (filter?.technicianId) list = list.filter((s) => s.technicianId === filter.technicianId);
+   230→    if (filter?.programId) list = list.filter((s) => s.programId === filter.programId);
+   231→    if (filter?.appointmentId) list = list.filter((s) => s.appointmentId === filter.appointmentId);
+   232→    if (filter?.status) list = list.filter((s) => s.status === filter.status);
+   233→    if (filter?.from) list = list.filter((s) => s.scheduledAt >= filter.from!);
+   234→    if (filter?.to) list = list.filter((s) => s.scheduledAt <= filter.to!);
+   235→    return list.sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt));
+   236→  }
+   237→
+   238→  /** Transition to "checked_in". */
+   239→  checkIn(id: SessionId, actor?: AccountId): MeasurementSession {
+   240→    return this.transition(id, "checked_in", { actor });
+   241→  }
+   242→
+   243→  /** Transition to "in_progress", emits session.started. */
+   244→  start(id: SessionId, actor?: AccountId): MeasurementSession {
+   245→    const updated = this.transition(id, "in_progress", { actor });
+   246→    void getEventBus().publish(
+   247→      buildEvent(
+   248→        TECHNICIAN_EVENTS.sessionStarted,
+   249→        {
+   250→          sessionId: id,
+   251→          technicianId: updated.technicianId,
+   252→          participantId: updated.participantId,
+   253→          programId: updated.programId,
+   254→          startedAt: updated.startedAt,
+   255→        },
+   256→        {},
+   257→        "domain",
+   258→      ),
+   259→    );
+   260→    return updated;
+   261→  }
+   262→
+   263→  /** Add a recorded measurement id to the session. */
+   264→  recordMeasurement(id: SessionId, measurementId: MeasurementId): MeasurementSession {
+   265→    const session = this.require(id);
+   266→    if (session.recordedMeasurements.includes(measurementId)) return session;
+   267→    const updated: MeasurementSession = {
+   268→      ...session,
+   269→      recordedMeasurements: [...session.recordedMeasurements, measurementId],
+   270→      updatedAt: getClock().iso(),
+   271→    };
+   272→    this.sessions.set(id, updated);
+   273→    return updated;
+   274→  }
+   275→
+   276→  /** Attach evidence and emit evidence.captured. Auto-transitions to evidence_captured. */
+   277→  captureEvidence(id: SessionId, evidenceId: EvidenceId, actor?: AccountId): MeasurementSession {
+   278→    const session = this.require(id);
+   279→    if (session.evidenceIds.includes(evidenceId)) return session;
+   280→    const now = getClock().iso();
+   281→    const updated: MeasurementSession = {
+   282→      ...session,
+   283→      evidenceIds: [...session.evidenceIds, evidenceId],
+   284→      status:
+   285→        session.status === "in_progress"
+   286→          ? "evidence_captured"
+   287→          : session.status,
+   288→      updatedAt: now,
+   289→    };
+   290→    this.sessions.set(id, updated);
+   291→    if (updated.status !== session.status) {
+   292→      this.pushHistory(id, session.status, updated.status, now, actor, "evidence captured");
+   293→    }
+   294→    void getEventBus().publish(
+   295→      buildEvent(
+   296→        TECHNICIAN_EVENTS.evidenceCaptured,
+   297→        {
+   298→          sessionId: id,
+   299→          evidenceId,
+   300→          technicianId: updated.technicianId,
+   301→          programId: updated.programId,
+   302→        },
+   303→        {},
+   304→        "domain",
+   305→      ),
+   306→    );
+   307→    return updated;
+   308→  }
+   309→
+   310→  /** Technician signs: compute SHA-256, transition to "technician_signed". */
+   311→  technicianSign(
+   312→    id: SessionId,
+   313→    technicianAccountId: AccountId,
+   314→    method: SignatureMethod = "digital",
+   315→  ): MeasurementSession {
+   316→    const session = this.require(id);
+   317→    if (session.status !== "in_progress" && session.status !== "evidence_captured") {
+   318→      throw new TechnicianError({
+   319→        code: "eks.technician.session.invalid_sign_state",
+   320→        category: "session_invalid",
+   321→        message: `Cannot sign session in status ${session.status}.`,
+   322→        userMessage: "This session cannot be signed in its current state.",
+   323→        metadata: { sessionId: id, status: session.status },
+   324→      });
+   325→    }
+   326→    const now = getClock().iso();
+   327→    const snapshot = this.snapshot(session);
+   328→    const signatureHash = this.signatureHash(snapshot, now, technicianAccountId);
+   329→    const signature: SessionSignature = {
+   330→      signedBy: technicianAccountId,
+   331→      signedAt: now,
+   332→      signatureHash,
+   333→      method,
+   334→    };
+   335→    const updated: MeasurementSession = {
+   336→      ...session,
+   337→      technicianSignature: signature,
+   338→      status: "technician_signed",
+   339→      updatedAt: now,
+   340→    };
+   341→    this.sessions.set(id, updated);
+   342→    this.pushHistory(id, session.status, "technician_signed", now, technicianAccountId, "technician signature");
+   343→    void getEventBus().publish(
+   344→      buildEvent(
+   345→        TECHNICIAN_EVENTS.technicianSigned,
+   346→        {
+   347→          sessionId: id,
+   348→          signedBy: technicianAccountId,
+   349→          signatureHash,
+   350→          method,
+   351→        },
+   352→        {},
+   353→        "domain",
+   354→      ),
+   355→    );
+   356→    return updated;
+   357→  }
+   358→
+   359→  /** Participant confirms: signs and transitions to "participant_confirmed". */
+   360→  participantConfirm(
+   361→    id: SessionId,
+   362→    participantAccountId: AccountId,
+   363→    method: SignatureMethod = "digital",
+   364→  ): MeasurementSession {
+   365→    const session = this.require(id);
+   366→    if (session.status !== "technician_signed" && session.status !== "participant_confirmed") {
+   367→      throw new TechnicianError({
+   368→        code: "eks.technician.session.invalid_confirm_state",
+   369→        category: "session_invalid",
+   370→        message: `Cannot confirm session in status ${session.status}.`,
+   371→        metadata: { sessionId: id, status: session.status },
+   372→      });
+   373→    }
+   374→    const now = getClock().iso();
+   375→    const snapshot = this.snapshot(session);
+   376→    const signatureHash = this.signatureHash(snapshot, now, participantAccountId);
+   377→    const signature: SessionSignature = {
+   378→      signedBy: participantAccountId,
+   379→      signedAt: now,
+   380→      signatureHash,
+   381→      method,
+   382→    };
+   383→    const updated: MeasurementSession = {
+   384→      ...session,
+   385→      participantSignature: signature,
+   386→      status: "participant_confirmed",
+   387→      updatedAt: now,
+   388→    };
+   389→    this.sessions.set(id, updated);
+   390→    this.pushHistory(id, session.status, "participant_confirmed", now, participantAccountId, "participant confirmation");
+   391→    void getEventBus().publish(
+   392→      buildEvent(
+   393→        TECHNICIAN_EVENTS.participantConfirmed,
+   394→        {
+   395→          sessionId: id,
+   396→          signedBy: participantAccountId,
+   397→          signatureHash,
+   398→          method,
+   399→        },
+   400→        {},
+   401→        "domain",
+   402→      ),
+   403→    );
+   404→    return updated;
+   405→  }
+   406→
+   407→  /** Program validation pass — transitions to "program_validated". */
+   408→  programValidate(id: SessionId, actor?: AccountId, verificationId?: VerificationId): MeasurementSession {
+   409→    const updated = this.transition(id, "program_validated", {
+   410→      actor,
+   411→      extra: verificationId ? { verificationId } : undefined,
+   412→    });
+   413→    return updated;
+   414→  }
+   415→
+   416→  /** Final verification — transitions to "verified", emits session.verified + session.completed. */
+   417→  verify(id: SessionId, actor?: AccountId, verificationId?: VerificationId): MeasurementSession {
+   418→    const now = getClock().iso();
+   419→    const session = this.require(id);
+   420→    const verified = this.transition(id, "verified", {
+   421→      actor,
+   422→      at: now,
+   423→      extra: { completedAt: now, verificationId },
+   424→    });
+   425→    void getEventBus().publish(
+   426→      buildEvent(
+   427→        TECHNICIAN_EVENTS.sessionVerified,
+   428→        {
+   429→          sessionId: id,
+   430→          technicianId: verified.technicianId,
+   431→          programId: verified.programId,
+   432→          verifiedAt: now,
+   433→        },
+   434→        {},
+   435→        "domain",
+   436→      ),
+   437→    );
+   438→    void getEventBus().publish(
+   439→      buildEvent(
+   440→        TECHNICIAN_EVENTS.sessionCompleted,
+   441→        {
+   442→          sessionId: id,
+   443→          technicianId: verified.technicianId,
+   444→          participantId: verified.participantId,
+   445→          programId: verified.programId,
+   446→          completedAt: now,
+   447→          outcome: "verified",
+   448→        },
+   449→        {},
+   450→        "domain",
+   451→      ),
+   452→    );
+   453→    // Best-effort: update technician profile session counters.
+   454→    try {
+   455→      getTechnicians().recordSession(verified.technicianId, true, false);
+   456→    } catch {
+   457→      // profile registry may not be initialized in this context.
+   458→    }
+   459→    return verified;
+   460→  }
+   461→
+   462→  dispute(id: SessionId, reason: string, actor?: AccountId): MeasurementSession {
+   463→    const updated = this.transition(id, "disputed", { actor, reason, reasonField: "disputeReason" });
+   464→    void getEventBus().publish(
+   465→      buildEvent(
+   466→        TECHNICIAN_EVENTS.disputeOpened,
+   467→        { sessionId: id, reason, technicianId: updated.technicianId },
+   468→        {},
+   469→        "domain",
+   470→      ),
+   471→    );
+   472→    return updated;
+   473→  }
+   474→
+   475→  cancel(id: SessionId, reason: string, actor?: AccountId): MeasurementSession {
+   476→    const updated = this.transition(id, "cancelled", { actor, reason, reasonField: "cancellationReason" });
+   477→    void getEventBus().publish(
+   478→      buildEvent(
+   479→        TECHNICIAN_EVENTS.sessionCompleted,
+   480→        { sessionId: id, outcome: "cancelled", reason, technicianId: updated.technicianId },
+   481→        {},
+   482→        "domain",
+   483→      ),
+   484→    );
+   485→    return updated;
+   486→  }
+   487→
+   488→  fail(id: SessionId, reason: string, actor?: AccountId): MeasurementSession {
+   489→    const updated = this.transition(id, "failed", { actor, reason, reasonField: "failureReason" });
+   490→    void getEventBus().publish(
+   491→      buildEvent(
+   492→        TECHNICIAN_EVENTS.sessionCompleted,
+   493→        { sessionId: id, outcome: "failed", reason, technicianId: updated.technicianId },
+   494→        {},
+   495→        "domain",
+   496→      ),
+   497→    );
+   498→    try {
+   499→      getTechnicians().recordSession(updated.technicianId, false, false);
+   500→    } catch {
+   501→      // profile registry may not be initialized in this context.
+   502→    }
+   503→    return updated;
+   504→  }
+   505→
+   506→  addNote(id: SessionId, note: string): MeasurementSession {
+   507→    const session = this.require(id);
+   508→    const updated: MeasurementSession = {
+   509→      ...session,
+   510→      notes: [...session.notes, note],
+   511→      updatedAt: getClock().iso(),
+   512→    };
+   513→    this.sessions.set(id, updated);
+   514→    return updated;
+   515→  }
+   516→
+   517→  addAuditReference(id: SessionId, ref: string): MeasurementSession {
+   518→    const session = this.require(id);
+   519→    if (session.auditReferences.includes(ref)) return session;
+   520→    const updated: MeasurementSession = {
+   521→      ...session,
+   522→      auditReferences: [...session.auditReferences, ref],
+   523→      updatedAt: getClock().iso(),
+   524→    };
+   525→    this.sessions.set(id, updated);
+   526→    return updated;
+   527→  }
+   528→
+   529→  setPaymentIntent(id: SessionId, paymentIntentId: PaymentIntentId): MeasurementSession {
+   530→    const session = this.require(id);
+   531→    const updated: MeasurementSession = {
+   532→      ...session,
+   533→      paymentIntentId,
+   534→      updatedAt: getClock().iso(),
+   535→    };
+   536→    this.sessions.set(id, updated);
+   537→    return updated;
+   538→  }
+   539→
+   540→  setVerification(id: SessionId, verificationId: VerificationId): MeasurementSession {
+   541→    const session = this.require(id);
+   542→    const updated: MeasurementSession = {
+   543→      ...session,
+   544→      verificationId,
+   545→      updatedAt: getClock().iso(),
+   546→    };
+   547→    this.sessions.set(id, updated);
+   548→    return updated;
+   549→  }
+   550→
+   551→  attachDevice(id: SessionId, deviceId: DeviceId): MeasurementSession {
+   552→    const session = this.require(id);
+   553→    const devices = session.deviceIds ?? [];
+   554→    if (devices.includes(deviceId)) return session;
+   555→    const updated: MeasurementSession = {
+   556→      ...session,
+   557→      deviceIds: [...devices, deviceId],
+   558→      updatedAt: getClock().iso(),
+   559→    };
+   560→    this.sessions.set(id, updated);
+   561→    return updated;
+   562→  }
+   563→
+   564→  getHistory(id: SessionId): SessionStep[] {
+   565→    return [...(this.history.get(id) ?? [])];
+   566→  }
+   567→
+   568→  getState(id: SessionId): SessionState {
+   569→    const session = this.require(id);
+   570→    const history = this.getHistory(id);
+   571→    const outcome: SessionOutcome = this.computeOutcome(session);
+   572→    return { session, history, outcome };
+   573→  }
+   574→
+   575→  getStats(): {
+   576→    total: number;
+   577→    byStatus: Record<string, number>;
+   578→    verified: number;
+   579→    disputed: number;
+   580→    cancelled: number;
+   581→    failed: number;
+   582→  } {
+   583→    const list = [...this.sessions.values()];
+   584→    const byStatus: Record<string, number> = {};
+   585→    for (const s of list) byStatus[s.status] = (byStatus[s.status] ?? 0) + 1;
+   586→    return {
+   587→      total: list.length,
+   588→      byStatus,
+   589→      verified: list.filter((s) => s.status === "verified").length,
+   590→      disputed: list.filter((s) => s.status === "disputed").length,
+   591→      cancelled: list.filter((s) => s.status === "cancelled").length,
+   592→      failed: list.filter((s) => s.status === "failed").length,
+   593→    };
+   594→  }
+   595→
+   596→  // -------------------------------------------------------------------------
+   597→  // Internal helpers
+   598→  // -------------------------------------------------------------------------
+   599→
+   600→  private require(id: SessionId): MeasurementSession {
+   601→    const session = this.sessions.get(id);
+   602→    if (!session) {
+   603→      throw new TechnicianError({
+   604→        code: "eks.technician.session.not_found",
+   605→        category: "not_found",
+   606→        message: "Session not found.",
+   607→        userMessage: "This measurement session does not exist.",
+   608→        metadata: { sessionId: id },
+   609→      });
+   610→    }
+   611→    return session;
+   612→  }
+   613→
+   614→  private transition(
+   615→    id: SessionId,
+   616→    toStatus: SessionStatus,
+   617→    opts: {
+   618→      actor?: AccountId;
+   619→      reason?: string;
+   620→      reasonField?: "cancellationReason" | "failureReason" | "disputeReason";
+   621→      at?: string;
+   622→      extra?: Partial<MeasurementSession>;
+   623→    },
+   624→  ): MeasurementSession {
+   625→    const session = this.require(id);
+   626→    const allowed = VALID_TRANSITIONS[session.status] ?? [];
+   627→    if (!allowed.includes(toStatus)) {
+   628→      throw new TechnicianError({
+   629→        code: "eks.technician.session.invalid_transition",
+   630→        category: "session_invalid",
+   631→        message: `Cannot transition session from ${session.status} to ${toStatus}.`,
+   632→        userMessage: "This session state change is not allowed.",
+   633→        metadata: { sessionId: id, from: session.status, to: toStatus },
+   634→      });
+   635→    }
+   636→    const now = opts.at ?? getClock().iso();
+   637→    const updated: MeasurementSession = {
+   638→      ...session,
+   639→      status: toStatus,
+   640→      startedAt: toStatus === "in_progress" ? (session.startedAt ?? now) : session.startedAt,
+   641→      completedAt:
+   642→        toStatus === "verified" || toStatus === "cancelled" || toStatus === "failed"
+   643→          ? now
+   644→          : session.completedAt,
+   645→      ...(opts.reason && opts.reasonField ? { [opts.reasonField]: opts.reason } : {}),
+   646→      ...(opts.extra ?? {}),
+   647→      updatedAt: now,
+   648→    };
+   649→    this.sessions.set(id, updated);
+   650→    this.pushHistory(id, session.status, toStatus, now, opts.actor, opts.reason);
+   651→    return updated;
+   652→  }
+   653→
+   654→  private pushHistory(
+   655→    id: SessionId,
+   656→    from: SessionStatus | "created",
+   657→    to: SessionStatus,
+   658→    at: string,
+   659→    actor?: AccountId,
+   660→    reason?: string,
+   661→  ): void {
+   662→    const list = this.history.get(id) ?? [];
+   663→    list.push({ fromStatus: from, toStatus: to, at, actor, reason });
+   664→    this.history.set(id, list);
+   665→  }
+   666→
+   667→  private indexBy(s: MeasurementSession): void {
+   668→    const pList = this.byParticipant.get(s.participantId) ?? [];
+   669→    this.byParticipant.set(s.participantId, [...pList, s.id]);
+   670→    const tList = this.byTechnician.get(s.technicianId) ?? [];
+   671→    this.byTechnician.set(s.technicianId, [...tList, s.id]);
+   672→    const prList = this.byProgram.get(s.programId) ?? [];
+   673→    this.byProgram.set(s.programId, [...prList, s.id]);
+   674→    if (s.appointmentId) {
+   675→      const aList = this.byAppointment.get(s.appointmentId) ?? [];
+   676→      this.byAppointment.set(s.appointmentId, [...aList, s.id]);
+   677→    }
+   678→  }
+   679→
+   680→  private computeOutcome(s: MeasurementSession): SessionOutcome {
+   681→    switch (s.status) {
+   682→      case "verified":
+   683→        return { kind: "verified", at: s.completedAt ?? s.updatedAt };
+   684→      case "cancelled":
+   685→        return { kind: "cancelled", at: s.completedAt ?? s.updatedAt, reason: s.cancellationReason ?? "unspecified" };
+   686→      case "failed":
+   687→        return { kind: "failed", at: s.completedAt ?? s.updatedAt, reason: s.failureReason ?? "unspecified" };
+   688→      case "disputed":
+   689→        return { kind: "disputed", at: s.updatedAt, reason: s.disputeReason ?? "unspecified" };
+   690→      default:
+   691→        return { kind: "open", currentStatus: s.status };
+   692→    }
+   693→  }
+   694→
+   695→  /** Project a session to its cryptographic snapshot. */
+   696→  private snapshot(s: MeasurementSession): SessionSnapshot {
+   697→    return {
+   698→      id: s.id,
+   699→      participantId: s.participantId,
+   700→      technicianId: s.technicianId,
+   701→      programId: s.programId,
+   702→      appointmentId: s.appointmentId,
+   703→      requestedMeasurements: [...s.requestedMeasurements],
+   704→      recordedMeasurements: s.recordedMeasurements.map((m) => String(m)),
+   705→      evidenceIds: s.evidenceIds.map((e) => String(e)),
+   706→      status: s.status,
+   707→      scheduledAt: s.scheduledAt,
+   708→      startedAt: s.startedAt,
+   709→      location: s.location,
+   710→    };
+   711→  }
+   712→
+   713→  /**
+   714→   * Compute a deterministic SHA-256 signature hash over the canonical
+   715→   * representation of the session snapshot plus the signer and timestamp.
+   716→   * Keys are sorted to guarantee reproducibility across runtimes.
+   717→   */
+   718→  private signatureHash(snapshot: SessionSnapshot, signedAt: string, signedBy: AccountId): string {
+   719→    const canonical = JSON.stringify(
+   720→      {
+   721→        evidenceIds: snapshot.evidenceIds,
+   722→        id: snapshot.id,
+   723→        participantId: snapshot.participantId,
+   724→        programId: snapshot.programId,
+   725→        recordedMeasurements: snapshot.recordedMeasurements,
+   726→        requestedMeasurements: snapshot.requestedMeasurements,
+   727→        scheduledAt: snapshot.scheduledAt,
+   728→        signedAt,
+   729→        signedBy,
+   730→        startedAt: snapshot.startedAt ?? null,
+   731→        status: snapshot.status,
+   732→        technicianId: snapshot.technicianId,
+   733→        appointmentId: snapshot.appointmentId ?? null,
+   734→        location: snapshot.location ?? null,
+   735→      },
+   736→      Object.keys({
+   737→        evidenceIds: 0,
+   738→        id: 0,
+   739→        participantId: 0,
+   740→        programId: 0,
+   741→        recordedMeasurements: 0,
+   742→        requestedMeasurements: 0,
+   743→        scheduledAt: 0,
+   744→        signedAt: 0,
+   745→        signedBy: 0,
+   746→        startedAt: 0,
+   747→        status: 0,
+   748→        technicianId: 0,
+   749→        appointmentId: 0,
+   750→        location: 0,
+   751→      }).sort(),
+   752→    );
+   753→    return createHash("sha256").update(canonical).digest("hex");
+   754→  }
+   755→}
+   756→
+   757→// ---------------------------------------------------------------------------
+   758→// Singleton
+   759→// ---------------------------------------------------------------------------
+   760→
+   761→let _manager: SessionManager | null = null;
+   762→
+   763→export function getSessions(): SessionManager {
+   764→  if (!_manager) _manager = new SessionManager();
+   765→  return _manager;
+   766→}
+   767→
+   768→/** Test-only: replace the singleton. */
+   769→export function setSessions(manager: SessionManager | null): void {
+   770→  _manager = manager;
+   771→}
+   772→

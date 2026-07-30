@@ -106,6 +106,24 @@ import {
   getDiscovery,
   type TechnicianError,
 } from "@/technicians";
+import {
+  bootCompetitions,
+  competitionsInfo,
+  competitionsSnapshot,
+  seedCompetitionDemoData,
+  getCompetitions as getCompetitionRegistry,
+  getSeasons as getSeasonManager,
+  getDivisions as getDivisionManager,
+  getScoring as getScoreCompiler,
+  getLeaderboards as getLeaderboardManager,
+  getRanking as getRankingEngine,
+  getQualification as getQualificationManager,
+  getRewards as getRewardManager,
+  getPrizePools as getPrizePoolManager,
+  getAntiCheat as getAntiCheatEngine,
+  getCompetitionAnalytics as getCompetitionAnalyticsEngine,
+  type CompetitionError,
+} from "@/competitions";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -119,14 +137,16 @@ export function ensurePlatform() {
     seedHealthDemoData();
     bootTechnicians();
     seedTechnicianDemoData();
+    bootCompetitions();
+    seedCompetitionDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot() };
 }
 
 export {
@@ -195,6 +215,17 @@ export {
   getPayments,
   getEligibility,
   getDiscovery,
+  getCompetitionRegistry,
+  getSeasonManager,
+  getDivisionManager,
+  getScoreCompiler,
+  getLeaderboardManager,
+  getRankingEngine,
+  getQualificationManager,
+  getRewardManager,
+  getPrizePoolManager,
+  getAntiCheatEngine,
+  getCompetitionAnalyticsEngine,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -210,10 +241,23 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // CompetitionError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.competition.")) {
+        const e = err as CompetitionError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" || e.category === "score_invalid" || e.category === "leaderboard_invalid" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_eligible" || e.category === "not_qualified" || e.category === "anti_cheat_violation" ? 403 :
+          e.category === "state_conflict" || e.category === "version_conflict" ? 409 :
+          e.category === "reward_invalid" ? 422 :
+          e.category === "quota_exceeded" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // TechnicianError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.technician.")) {
         const e = err as TechnicianError;
