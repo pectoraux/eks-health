@@ -139,6 +139,22 @@ import {
   getReminders as getReminderManager,
   type MissionError,
 } from "@/missions";
+import {
+  bootDeveloper,
+  developerInfo,
+  developerSnapshot,
+  seedDeveloperDemoData,
+  getCli,
+  getSimulator,
+  getDesigner,
+  getWorkflowBuilder,
+  getDebugger,
+  getInspector,
+  getApiExplorer,
+  getDocsGenerator,
+  getSampleLibrary,
+  type DeveloperError,
+} from "@/developer";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -156,14 +172,16 @@ export function ensurePlatform() {
     seedCompetitionDemoData();
     bootMissions();
     seedMissionDemoData();
+    bootDeveloper();
+    seedDeveloperDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot() };
 }
 
 export {
@@ -251,6 +269,15 @@ export {
   getPersonalizationEngine,
   getExplainabilityEngine,
   getReminderManager,
+  getCli,
+  getSimulator,
+  getDesigner,
+  getWorkflowBuilder,
+  getDebugger,
+  getInspector,
+  getApiExplorer,
+  getDocsGenerator,
+  getSampleLibrary,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -266,10 +293,23 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // DeveloperError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.developer.")) {
+        const e = err as DeveloperError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_authorized" ? 403 :
+          e.category === "state_conflict" ? 409 :
+          e.category === "build_failed" || e.category === "certification_blocked" ? 422 :
+          e.category === "quota_exceeded" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // MissionError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && ((err as { code: string }).code.startsWith("eks.mission.") || (err as { code: string }).code.startsWith("eks.ai."))) {
         const e = err as MissionError;

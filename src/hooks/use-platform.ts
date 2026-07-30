@@ -10,6 +10,7 @@ export interface PlatformSnapshot {
   technicians: unknown;
   competitions: unknown;
   missions: unknown;
+  developer: unknown;
 }
 
 export interface ApiResult<T> {
