@@ -21,6 +21,10 @@ import { ProgramDetailSection } from "@/components/console/sections/program-deta
 import { MarketplaceSection } from "@/components/console/sections/marketplace";
 import { CertificationSection } from "@/components/console/sections/certification";
 import { SdkSection } from "@/components/console/sections/sdk";
+import { HealthOverviewSection } from "@/components/console/sections/health-overview";
+import { SchemasSection } from "@/components/console/sections/schemas";
+import { MeasurementsSection } from "@/components/console/sections/measurements";
+import { TimelineSection } from "@/components/console/sections/timeline";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -41,7 +45,11 @@ export type ConsoleSection =
   | "program-detail"
   | "marketplace"
   | "certification"
-  | "sdk";
+  | "sdk"
+  | "health"
+  | "schemas"
+  | "measurements"
+  | "timeline";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -130,6 +138,14 @@ function SectionRouter({
       return <CertificationSection data={data} onRefresh={refresh} />;
     case "sdk":
       return <SdkSection data={data} />;
+    case "health":
+      return <HealthOverviewSection data={data} />;
+    case "schemas":
+      return <SchemasSection data={data} />;
+    case "measurements":
+      return <MeasurementsSection data={data} onRefresh={refresh} />;
+    case "timeline":
+      return <TimelineSection data={data} />;
   }
 
   function onSelectProgramBack() {

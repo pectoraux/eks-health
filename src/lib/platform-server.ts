@@ -69,6 +69,24 @@ import {
   getTesting,
   type ProgramError,
 } from "@/programs";
+import {
+  bootHealth,
+  healthInfo,
+  healthSnapshot,
+  seedHealthDemoData,
+  getSchemas as getHealthSchemas,
+  getMeasurements as getHealthMeasurements,
+  getEvidence as getHealthEvidence,
+  getSources as getHealthSources,
+  getProfiles as getHealthProfiles,
+  getUnits as getHealthUnits,
+  getComposite as getHealthComposite,
+  getDerived as getHealthDerived,
+  getAnalytics as getHealthAnalytics,
+  getInterop as getHealthInterop,
+  getHealthSearch,
+  type HealthError,
+} from "@/health";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -78,14 +96,16 @@ export function ensurePlatform() {
     seedIdentityDemoData();
     bootPrograms();
     seedProgramDemoData();
+    bootHealth();
+    seedHealthDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot() };
 }
 
 export {
@@ -131,6 +151,17 @@ export {
   getProgramEvents,
   getDependencies,
   getTesting,
+  getHealthSchemas,
+  getHealthMeasurements,
+  getHealthEvidence,
+  getHealthSources,
+  getHealthProfiles,
+  getHealthUnits,
+  getHealthComposite,
+  getHealthDerived,
+  getHealthAnalytics,
+  getHealthInterop,
+  getHealthSearch,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -146,10 +177,22 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // HealthError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.health.")) {
+        const e = err as HealthError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "schema_invalid" || e.category === "validation_failed" || e.category === "range_exceeded" || e.category === "unit_mismatch" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "consent_required" || e.category === "verification_required" || e.category === "evidence_required" ? 403 :
+          e.category === "duplicate_measurement" || e.category === "version_conflict" || e.category === "state_conflict" ? 409 :
+          e.category === "quota_exceeded" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // ProgramError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err) {
         const e = err as ProgramError;

@@ -18,6 +18,10 @@ import {
   Store,
   BadgeCheck,
   Code2,
+  Database,
+  Ruler,
+  LineChart,
+  GitBranch,
   Moon,
   Sun,
 } from "lucide-react";
@@ -50,6 +54,10 @@ const NAV: NavItem[] = [
   { id: "marketplace", label: "Marketplace", icon: Store, group: "Program OS" },
   { id: "certification", label: "Certification", icon: BadgeCheck, group: "Program OS" },
   { id: "sdk", label: "Developer SDK", icon: Code2, group: "Program OS" },
+  { id: "health", label: "Health Data", icon: HeartPulse, group: "Health Data" },
+  { id: "schemas", label: "Measurement Schemas", icon: Database, group: "Health Data" },
+  { id: "measurements", label: "Measurements", icon: Activity, group: "Health Data" },
+  { id: "timeline", label: "Timeline", icon: LineChart, group: "Health Data" },
 ];
 
 export function Sidebar({

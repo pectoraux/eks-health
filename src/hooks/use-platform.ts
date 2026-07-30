@@ -6,6 +6,7 @@ export interface PlatformSnapshot {
   kernel: unknown;
   identity: unknown;
   programs: unknown;
+  health: unknown;
 }
 
 export interface ApiResult<T> {
