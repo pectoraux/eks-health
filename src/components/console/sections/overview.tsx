@@ -7,10 +7,12 @@ import type { PlatformSnapshot } from "@/hooks/use-platform";
 export function OverviewSection({ data }: { data: PlatformSnapshot }) {
   const kernel = data.kernel as Record<string, unknown>;
   const identity = data.identity as Record<string, unknown>;
+  const programs = (data.programs as Record<string, unknown>) ?? {};
   const services = (kernel.services as unknown[]) ?? [];
   const contexts = (kernel.contexts as unknown[]) ?? [];
   const accounts = (identity.accounts as unknown[]) ?? [];
-  const orgs = (identity.organizations as unknown[]) ?? [];
+  const programList = (programs.programs as unknown[]) ?? [];
+  const marketplaceStats = (programs.marketplace as { stats?: { total?: number; published?: number } })?.stats ?? {};
   const auditCounts = (identity.audit as { count?: Record<string, number> })?.count ?? {};
   const totalAudit = Object.values(auditCounts).reduce((a, b) => a + (b as number), 0);
   const sessions = (identity.sessions as { stats?: { active?: number; total?: number } })?.stats ?? {};
@@ -21,7 +23,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
         <div className="relative z-10">
           <div className="inline-flex items-center gap-2 rounded-full bg-[var(--brand-muted)] px-3 py-1 text-xs font-medium text-[var(--brand)] mb-3">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--brand)] animate-pulse" />
-            Milestone 2 — Identity, Security &amp; Privacy Platform
+            Milestone 3 — Extension Runtime &amp; Program Operating System
           </div>
           <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight max-w-3xl">
             Eks-Health Preventive Health Operating System
@@ -43,8 +45,8 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard label="Kernel Services" value={services.length} hint={`${contexts.length} bounded contexts`} />
-        <StatCard label="Identity Accounts" value={accounts.length} hint="across all personas" accent />
-        <StatCard label="Active Sessions" value={sessions.active ?? 0} hint={`${sessions.total ?? 0} total`} />
+        <StatCard label="Identity Accounts" value={accounts.length} hint="across all personas" />
+        <StatCard label="Programs" value={programList.length} hint={`${marketplaceStats.published ?? 0} published`} accent />
         <StatCard label="Audit Events" value={totalAudit} hint="hash-chained, immutable" />
       </div>
 
@@ -52,9 +54,9 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
         <Panel title="Platform Layers">
           <div className="space-y-3">
             <LayerRow icon={<Boxes className="h-4 w-4" />} name="Platform Kernel" desc="16 subsystems: events, config, flags, scheduler, observability, storage, search, gateway, security, AI readiness" version="v1.0.0-m1" />
-            <LayerRow icon={<Lock className="h-4 w-4" />} name="Identity Platform" desc="15 subsystems: accounts, auth, sessions, devices, orgs, roles, authorization, consent, privacy, audit, monitoring, compliance" version="v2.0.0-m2" active />
-            <LayerRow icon={<Layers className="h-4 w-4" />} name="Programs &amp; Marketplace" desc="Future milestone — runs on top of the kernel" version="reserved" />
-            <LayerRow icon={<Zap className="h-4 w-4" />} name="AI Agents" desc="Future milestone — agent runtime ready" version="reserved" />
+            <LayerRow icon={<Lock className="h-4 w-4" />} name="Identity Platform" desc="15 subsystems: accounts, auth, sessions, devices, orgs, roles, authorization, consent, privacy, audit, monitoring, compliance" version="v2.0.0-m2" />
+            <LayerRow icon={<Layers className="h-4 w-4" />} name="Program Operating System" desc="16 subsystems: manifests, capabilities, lifecycle, sandbox, quotas, storage, events, certification, SDK, testing, dependencies, marketplace, observability, developer, execution" version="v3.0.0-m3" active />
+            <LayerRow icon={<Zap className="h-4 w-4" />} name="Health Programs" desc="Cardio, sleep, nutrition, fitness, mental wellness — built ON the runtime, not in it" version="on runtime" />
           </div>
         </Panel>
 

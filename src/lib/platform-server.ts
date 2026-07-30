@@ -48,6 +48,27 @@ import {
   getCompliance,
   type IdentityError,
 } from "@/identity";
+import {
+  bootPrograms,
+  programsInfo,
+  programsSnapshot,
+  seedProgramDemoData,
+  getRegistry as getProgramRegistry,
+  getCapabilities as getProgramCapabilities,
+  getCertification,
+  getSdk,
+  getMarketplace,
+  getProgramObservability,
+  getDeveloperManager,
+  getExecutionManager,
+  getSandboxManager,
+  getQuotas,
+  getProgramStorage,
+  getProgramEvents,
+  getDependencies,
+  getTesting,
+  type ProgramError,
+} from "@/programs";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -55,14 +76,16 @@ export function ensurePlatform() {
     bootKernel();
     bootIdentity();
     seedIdentityDemoData();
+    bootPrograms();
+    seedProgramDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot() };
 }
 
 export {
@@ -94,6 +117,20 @@ export {
   getSecurityPolicies,
   getMonitoring,
   getCompliance,
+  getProgramRegistry,
+  getProgramCapabilities,
+  getCertification,
+  getSdk,
+  getMarketplace,
+  getProgramObservability,
+  getDeveloperManager,
+  getExecutionManager,
+  getSandboxManager,
+  getQuotas,
+  getProgramStorage,
+  getProgramEvents,
+  getDependencies,
+  getTesting,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -109,10 +146,23 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // ProgramError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err) {
+        const e = err as ProgramError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" || e.category === "manifest_invalid" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "capability_denied" || e.category === "sandbox_violation" ? 403 :
+          e.category === "quota_exceeded" ? 429 :
+          e.category === "version_conflict" || e.category === "state_conflict" ? 409 :
+          e.category === "certification_failed" ? 422 : 500;
+        return Response.json(body, { status });
+      }
       if (err && typeof err === "object" && "toJSON" in err) {
         const e = err as IdentityError;
         const body = { ok: false, error: e.toJSON() };

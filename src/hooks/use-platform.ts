@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from "react";
 export interface PlatformSnapshot {
   kernel: unknown;
   identity: unknown;
+  programs: unknown;
 }
 
 export interface ApiResult<T> {

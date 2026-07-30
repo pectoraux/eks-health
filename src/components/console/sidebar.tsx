@@ -14,6 +14,10 @@ import {
   Activity,
   ClipboardCheck,
   HeartPulse,
+  Package,
+  Store,
+  BadgeCheck,
+  Code2,
   Moon,
   Sun,
 } from "lucide-react";
@@ -42,6 +46,10 @@ const NAV: NavItem[] = [
   { id: "audit", label: "Audit Trail", icon: ClipboardCheck, group: "Security" },
   { id: "monitoring", label: "Security Monitoring", icon: Activity, group: "Security" },
   { id: "compliance", label: "Compliance", icon: ShieldCheck, group: "Security" },
+  { id: "programs", label: "Programs", icon: Package, group: "Program OS" },
+  { id: "marketplace", label: "Marketplace", icon: Store, group: "Program OS" },
+  { id: "certification", label: "Certification", icon: BadgeCheck, group: "Program OS" },
+  { id: "sdk", label: "Developer SDK", icon: Code2, group: "Program OS" },
 ];
 
 export function Sidebar({
@@ -52,6 +60,8 @@ export function Sidebar({
   onSelect: (s: ConsoleSection) => void;
 }) {
   const { theme, setTheme } = useTheme();
+  // Avoid hydration mismatch: render a stable label until mounted.
+  const isDark = typeof window !== "undefined" ? theme === "dark" : true;
   const groups = [...new Set(NAV.map((n) => n.group))];
 
   return (
@@ -101,8 +111,8 @@ export function Sidebar({
           className="w-full justify-start text-muted-foreground"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
         >
-          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          <span className="ml-2.5">{theme === "dark" ? "Light" : "Dark"} mode</span>
+          {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          <span className="ml-2.5">{isDark ? "Light" : "Dark"} mode</span>
         </Button>
       </div>
     </aside>

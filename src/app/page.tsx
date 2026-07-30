@@ -16,6 +16,11 @@ import { AuditSection } from "@/components/console/sections/audit";
 import { MonitoringSection } from "@/components/console/sections/monitoring";
 import { ComplianceSection } from "@/components/console/sections/compliance";
 import { ArchitectureSection } from "@/components/console/sections/architecture";
+import { ProgramsSection } from "@/components/console/sections/programs";
+import { ProgramDetailSection } from "@/components/console/sections/program-detail";
+import { MarketplaceSection } from "@/components/console/sections/marketplace";
+import { CertificationSection } from "@/components/console/sections/certification";
+import { SdkSection } from "@/components/console/sections/sdk";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -31,11 +36,22 @@ export type ConsoleSection =
   | "consent"
   | "audit"
   | "monitoring"
-  | "compliance";
+  | "compliance"
+  | "programs"
+  | "program-detail"
+  | "marketplace"
+  | "certification"
+  | "sdk";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
+  const [selectedProgramId, setSelectedProgramId] = useState<string | null>(null);
   const { data, loading, error, refresh } = usePlatformSnapshot();
+
+  const selectProgram = (id: string) => {
+    setSelectedProgramId(id);
+    setSection("program-detail");
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -52,6 +68,8 @@ export default function Home() {
                 section={section}
                 data={data}
                 refresh={refresh}
+                selectedProgramId={selectedProgramId}
+                onSelectProgram={selectProgram}
               />
             ) : null}
           </div>
@@ -66,10 +84,14 @@ function SectionRouter({
   section,
   data,
   refresh,
+  selectedProgramId,
+  onSelectProgram,
 }: {
   section: ConsoleSection;
   data: NonNullable<ReturnType<typeof usePlatformSnapshot>["data"]>;
   refresh: () => void;
+  selectedProgramId: string | null;
+  onSelectProgram: (id: string) => void;
 }) {
   switch (section) {
     case "overview":
@@ -98,6 +120,21 @@ function SectionRouter({
       return <MonitoringSection data={data} onRefresh={refresh} />;
     case "compliance":
       return <ComplianceSection data={data} />;
+    case "programs":
+      return <ProgramsSection data={data} onRefresh={refresh} onSelectProgram={onSelectProgram} />;
+    case "program-detail":
+      return <ProgramDetailSection data={data} onRefresh={refresh} programId={selectedProgramId} onBack={() => onSelectProgramBack()} />;
+    case "marketplace":
+      return <MarketplaceSection data={data} />;
+    case "certification":
+      return <CertificationSection data={data} onRefresh={refresh} />;
+    case "sdk":
+      return <SdkSection data={data} />;
+  }
+
+  function onSelectProgramBack() {
+    refresh();
+    // navigate back via the sidebar — handled by parent state
   }
 }
 
