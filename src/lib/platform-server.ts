@@ -87,6 +87,25 @@ import {
   getHealthSearch,
   type HealthError,
 } from "@/health";
+import {
+  bootTechnicians,
+  techniciansInfo,
+  techniciansSnapshot,
+  seedTechnicianDemoData,
+  getTechnicians as getTechnicianRegistry,
+  getCertifications as getCertificationRegistry,
+  getAccreditation as getAccreditationRegistry,
+  getSessions as getSessionManager,
+  getAppointments as getAppointmentManager,
+  getReputation as getReputationManager,
+  getDisputes as getDisputeManager,
+  getDevices as getDeviceRegistry,
+  getFraudDetection,
+  getPayments,
+  getEligibility,
+  getDiscovery,
+  type TechnicianError,
+} from "@/technicians";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -98,14 +117,16 @@ export function ensurePlatform() {
     seedProgramDemoData();
     bootHealth();
     seedHealthDemoData();
+    bootTechnicians();
+    seedTechnicianDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot() };
 }
 
 export {
@@ -162,6 +183,18 @@ export {
   getHealthAnalytics,
   getHealthInterop,
   getHealthSearch,
+  getTechnicianRegistry,
+  getCertificationRegistry,
+  getAccreditationRegistry,
+  getSessionManager,
+  getAppointmentManager,
+  getReputationManager,
+  getDisputeManager,
+  getDeviceRegistry,
+  getFraudDetection,
+  getPayments,
+  getEligibility,
+  getDiscovery,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -177,10 +210,24 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // TechnicianError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.technician.")) {
+        const e = err as TechnicianError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_certified" || e.category === "not_eligible" || e.category === "device_not_trusted" || e.category === "fraud_detected" ? 403 :
+          e.category === "certification_expired" ? 410 :
+          e.category === "appointment_conflict" || e.category === "state_conflict" ? 409 :
+          e.category === "payment_required" ? 402 :
+          e.category === "session_invalid" || e.category === "verification_failed" || e.category === "dispute_invalid" ? 422 : 500;
+        return Response.json(body, { status });
+      }
       // HealthError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.health.")) {
         const e = err as HealthError;

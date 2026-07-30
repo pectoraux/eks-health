@@ -7,6 +7,7 @@ export interface PlatformSnapshot {
   identity: unknown;
   programs: unknown;
   health: unknown;
+  technicians: unknown;
 }
 
 export interface ApiResult<T> {

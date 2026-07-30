@@ -25,6 +25,10 @@ import { HealthOverviewSection } from "@/components/console/sections/health-over
 import { SchemasSection } from "@/components/console/sections/schemas";
 import { MeasurementsSection } from "@/components/console/sections/measurements";
 import { TimelineSection } from "@/components/console/sections/timeline";
+import { TechniciansSection } from "@/components/console/sections/technicians";
+import { SessionsSection as IdentitySessionsSection } from "@/components/console/sections/sessions";
+import { ReputationSection } from "@/components/console/sections/reputation";
+import { TechSessionsSection } from "@/components/console/sections/tech-sessions";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -49,7 +53,10 @@ export type ConsoleSection =
   | "health"
   | "schemas"
   | "measurements"
-  | "timeline";
+  | "timeline"
+  | "technicians"
+  | "tech-sessions"
+  | "reputation";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -113,7 +120,7 @@ function SectionRouter({
     case "auth":
       return <AuthSection data={data} onRefresh={refresh} />;
     case "sessions":
-      return <SessionsSection data={data} onRefresh={refresh} />;
+      return <IdentitySessionsSection data={data} onRefresh={refresh} />;
     case "orgs":
       return <OrgsSection data={data} onRefresh={refresh} />;
     case "roles":
@@ -146,6 +153,12 @@ function SectionRouter({
       return <MeasurementsSection data={data} onRefresh={refresh} />;
     case "timeline":
       return <TimelineSection data={data} />;
+    case "technicians":
+      return <TechniciansSection data={data} onRefresh={refresh} />;
+    case "tech-sessions":
+      return <TechSessionsSection data={data} />;
+    case "reputation":
+      return <ReputationSection data={data} />;
   }
 
   function onSelectProgramBack() {

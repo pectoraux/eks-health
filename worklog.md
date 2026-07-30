@@ -788,3 +788,215 @@ Stage Summary:
 - Milestone 4 COMPLETE. Health data platform (17 subsystems) + 5 API routes + 4 console sections verified working end-to-end.
 - Total platform: 64 subsystems (16 kernel + 15 identity + 16 programs + 17 health), 35 API routes, 22 console sections.
 - Success criteria met: Programs can publish new measurement schemas without modifying the platform; participants have secure, versioned, immutable health timelines; measurements, evidence, and verification workflows are fully extensible; every data access is consent-aware, policy-enforced, encrypted, and audited.
+
+---
+Task ID: M5-0
+Agent: orchestrator
+Task: Begin Milestone 5 — Health Technician Network & Verification Platform
+
+Work Log:
+- Verified M1-M4 intact (64 subsystems, 0 TS errors, clean lint).
+- Plan: build src/technicians/* on top of kernel + identity + programs + health. Core principle: platform knows ONLY generic concepts (Technician, Certification, Eligibility, Appointment, Measurement Session, Verification, Evidence, Trust, Reputation, Accreditation) — never profession-specific types (nurses, doctors, etc.).
+- Subsystems: core, profiles, certifications, accreditation, eligibility, sessions, appointments, discovery, reputation, disputes, devices, chain-of-custody, fraud, payments.
+- Payment boundary: no payment logic — integrate through Payment Provider Interface (PaySwap initially, replaceable).
+
+Stage Summary:
+- M5 begun. Technician network extends identity personas + health measurement sessions + health verification.
+
+---
+Task ID: m5-2
+Agent: general-purpose (technicians: eligibility, sessions, appointments, discovery)
+Task: Build eligibility + sessions + appointments + discovery
+
+Work Log:
+- Read M1–M4 worklog, technicians/core (branded ids, errors, events, statuses),
+  technicians/profiles (TechnicianRegistry, AvailabilitySchedule),
+  technicians/certifications (CertificationRegistry, hasValidCert),
+  technicians/accreditation (AccreditationRegistry, isAccreditedByTrustedAuthority),
+  and kernel/health barrels (getEventBus, buildEvent, generateId, getClock, Brand).
+- Built `src/technicians/eligibility/index.ts`:
+  * Pure rule-based engine — no hardcoded requirements. Programs publish
+    EligibilityPolicy (rules → conditions). Each RuleCondition is
+    (field, operator, value, scope?) evaluated generically.
+  * Real evaluation: consults live TechnicianRegistry, CertificationRegistry,
+    AccreditationRegistry. Reputation resolved via a registered resolver hook
+    (`setReputationResolver`) that m5-3 wires at boot; falls back to a
+    deterministic proxy from profile fields (rating×0.5 + completion×0.35 +
+    (1-disputeRate)×0.15) so the engine always works even before m5-3 boots.
+  * Operators: eq/ne/in/not_in/gt/gte/lt/lte/exists/regex across fields
+    certification, skill, region, reputation, accreditation,
+    organization_membership, equipment, language, program_support,
+    certification_level, certification_recency, category, status, custom.
+  * Hard-gate vs soft-gate rules → eligible / ineligible / conditional.
+  * registerPolicy, getPolicy, listPolicies, evaluate, evaluateBatch,
+    simulate (what-if), getResult, listResults.
+  * Pre-registers DEMO_PROGRAM_ID sample policy with 6 rules (Licensed Nurse
+    cert, blood_pressure skill, GH region, reputation≥95, cert recency≤730d,
+    trusted accreditation for preventive_health scope).
+  * SHA-256 evaluation fingerprint for audit. Emits
+    `eks.technician.eligibility.evaluated`.
+- Built `src/technicians/sessions/index.ts`:
+  * MeasurementSession record + SessionSignature (signedBy, signedAt,
+    signatureHash = SHA-256 of canonical session snapshot, method).
+  * Real state machine: scheduled → checked_in → in_progress →
+    evidence_captured → technician_signed → participant_confirmed →
+    program_validated → verified, with disputed/cancelled/failed exits.
+  * create, checkIn, start, recordMeasurement, captureEvidence,
+    technicianSign (computes real SHA-256 over canonical JSON of session
+    snapshot), participantConfirm, programValidate, verify, dispute, cancel,
+    fail, addNote, addAuditReference, setPaymentIntent, setVerification,
+    attachDevice, getHistory, getState (with outcome), getStats.
+  * Emits session.started, evidence.captured, session.signed,
+    session.confirmed, session.verified, session.completed, dispute.opened.
+  * Best-effort updates to technician profile counters on verify/fail.
+- Built `src/technicians/appointments/index.ts`:
+  * Appointment + BookingRule + WaitlistEntry + RecurringAppointment +
+    TimeSlot + AvailabilityWindow.
+  * REAL availability computation: iterates UTC-aligned candidate slots,
+    reads wall-clock via Intl.DateTimeFormat in the technician's tz, rejects
+    midnight-crossing slots, checks weeklyHours, excludes blackout periods
+    and existing appointments, respects maxConcurrentBookings.
+  * book() validates lead time, horizon, payment-required, then asserts
+    availability (weekly hours + blackout + capacity).
+  * confirm, start, complete, cancel (auto-promotes waitlist), markNoShow,
+    reschedule (links rescheduledFrom, bumps rescheduleCount, enforces
+    maxReschedules), addToWaitlist (position ordering), promoteFromWaitlist
+    (creates new appt from cancelled slot), list, getAvailability,
+    setupRecurring (daily/weekly/biweekly/monthly), sendReminder.
+  * Emits appointment.booked, appointment.cancelled, appointment.rescheduled,
+    waitlist_added, waitlist_promoted, recurring_slot_skipped,
+    appointment.reminder_sent.
+  * Exports tz helpers (tzParts, combineTz) for downstream reuse.
+- Built `src/technicians/discovery/index.ts`:
+  * DiscoveryQuery, DiscoveryResult, DiscoveryFilter, RankingAlgorithm,
+    MatchScore (per-component breakdown).
+  * REAL haversine distance (Earth radius 6371km, exported as haversineKm).
+  * search(): hard-filters by programId, regions, languages, minRating,
+    requiredEquipment, requiredCertifications, remoteOnly/inPersonOnly,
+    maxDistanceKm, requireAccreditation, dateRange (availability). Then
+    weighted scoring: cert match (30), language (15), rating (20), distance
+    (25), region (10), availability (10), accreditation (10) → scaled 0-100.
+  * Programs register custom RankingAlgorithm overrides via
+    registerRankingAlgorithm(programId, fn).
+  * match() scores a single technician (0 if hard-filter fails).
+  * suggest(participantId, programId) uses a registered
+    ParticipantLocationResolver hook (setParticipantLocationResolver); falls
+    back to location-agnostic ranking by rating.
+  * getNearby(lat, lon, radiusKm, filter?) and listAvailable(programId,
+    from, to) built atop search().
+  * Sort modes: distance, rating, availability, reputation.
+- Verified zero type errors in all four files (only unrelated errors in
+  examples/websocket/, skills/, and the parallel-built smoke_m5_3.ts remain
+  — not in scope for m5-2).
+- Wrote and ran `smoke_m5_2.ts` end-to-end: registered a Ghana-based nurse
+  technician with weekly Mon–Fri 9–17 availability, granted Licensed Nurse
+  cert + Ministry of Health accreditation, exercised all four subsystems.
+  Result: eligibility eligible (6/6 rules), 40 bookable slots in 7 days,
+  appointment lifecycle requested→confirmed→in_progress→completed, session
+  lifecycle scheduled→…→verified with real SHA-256 signature, discovery
+  returned the technician with matchScore 67 at 0.5km, haversine
+  Accra→Kumasi=197km (real ~206km; within tolerance). ✅ smoke test PASSED.
+- Appended this worklog entry.
+
+Stage Summary:
+- Files created:
+  * src/technicians/eligibility/index.ts  (~620 lines) — rule-based engine,
+    DEMO_PROGRAM_ID sample policy, reputation resolver hook, SHA-256
+    evaluation fingerprints.
+  * src/technicians/sessions/index.ts     (~620 lines) — full session state
+    machine, real SHA-256 signature hashing, audit history, outcomes.
+  * src/technicians/appointments/index.ts (~700 lines) — booking, real
+    tz-aware availability, waitlist + promotion, recurring series,
+    reminders, custom BookingRule per program.
+  * src/technicians/discovery/index.ts    (~440 lines) — haversine, weighted
+    multi-criteria scoring, program-scoped custom rankers, suggest hook.
+  * smoke_m5_2.ts (root) — end-to-end smoke test, all green.
+- Key decisions:
+  * Reputation and participant-location are wired via setter hooks
+    (`setReputationResolver`, `setParticipantLocationResolver`) so m5-3 /
+    identity can register their resolvers at boot without creating a hard
+    build dependency. Both fall back to deterministic profile-derived
+    computations when the resolver is absent.
+  * `asEligibilityResultId` is not exported from `../core`; defined a local
+    cast helper (branded type itself IS exported). Other modules' alias
+    functions (asAppointmentId, asSessionId, asWaitlistEntryId,
+    asEligibilityRuleId, asPaymentIntentId) are imported from `../core`.
+  * Availability computation uses Intl.DateTimeFormat for tz-correct
+    wall-clock reads — no external date library required.
+  * Session signatures hash a canonical JSON of the session snapshot (sorted
+    keys) plus signer + timestamp, producing a reproducible audit anchor.
+  * State machines use a `VALID_TRANSITIONS` map + central `transition()`
+    method that throws `TechnicianError` with category `session_invalid` /
+    `state_conflict` on illegal transitions.
+- All four modules follow the established pattern: `import "server-only"`,
+  pure TS strict ESM, `import type` for types, no external deps beyond
+  node:crypto, singleton `get<Name>()`, events via
+  `getEventBus().publish(buildEvent(...))`, `getClock().iso()` for
+  timestamps, `generateId(prefix)` for IDs.
+- Did NOT create `src/technicians/index.ts` (per task instruction).
+
+---
+Task ID: m5-3
+Agent: general-purpose (technicians: reputation, disputes, devices, chain-of-custody, fraud, payments)
+Task: Build reputation + disputes + devices + chain-of-custody + fraud + payments
+
+Work Log:
+- Read worklog.md, src/technicians/core/index.ts (branded ids, ReputationFactor, DisputeStatus/Reason, DeviceTrustLevel, FraudAlertType/Severity, PaymentProviderId/PaymentIntent, TechnicianError, TECHNICIAN_EVENTS), src/technicians/profiles/index.ts (TechnicianProfile, TechnicianRegistry, getTechnicians), src/kernel/index.ts + src/health/index.ts barrels (getMeasurements, ProfileId, SchemaId), src/technicians/certifications/index.ts + accreditation/index.ts to absorb the established pattern (`import "server-only"`, manager class + singleton `get<Name>()`, `import type` for types, getEventBus().publish(buildEvent(...)), getClock().iso() for timestamps, generateId() for ids, real logic with no mocks, ESM, strict).
+- Built `src/technicians/reputation/index.ts` (~620 lines): ReputationId (from core), ReputationFactor weights table (accuracy 20%, verification_quality 15%, dispute_rate 15%, completion_rate 10%, participant_feedback 15%, response_time 5%, fraud_indicators 10%, platform_violations 5%, certification_history 5%, consistency 0% — sums to 1.0; consistency tracked but not weighted per spec). ReputationProfile, ReputationScore (factor/score/weight/sampleCount/lastSampleAt), FeedbackEntry (rating 1-5 with partial factor overrides), ReputationEvent (typed with previousScore/newScore/delta), ReputationDecay. ReputationManager: getOrCreate (defaults 50/100), get, list (with minScore/maxScore/trend/technicianIds filter), recordFeedback (real EMA of rating→0-100 normalized scores, updates positive/negative/neutral counts), recordSession (updates completion_rate/verification_quality/dispute_rate/accuracy/consistency via EMA), recordResponseTime (lower responseMs = higher score), recordFraudIndicator (sample scores below 50 baseline: low 30/medium 15/high 5/critical 0), recordViolation, recordCertification, recompute (real weighted average over all factors), getTrend (real last-10 vs previous-10 score comparison with ±2 threshold), getTop, decay (real exponential decay toward baseline 50 with 90-day half-life, called by scheduler), getStats, listFeedback. Emits eks.technician.reputation.updated on each update. Real weighted-average computation verified by smoke test (expected = sum(factor*weight)/sum(weights), actual matched).
+- Built `src/technicians/disputes/index.ts` (~360 lines): DisputeId (from core), Dispute (measurementId/sessionId/disputedBy/technicianId/programId/reason/description/status/openedAt/evidenceIds/responses/reviews/decision/resolvedAt/closedAt/timeline), DisputeResponse (from/role/message/evidenceIds/at), DisputeReview (reviewerId/role/recommendation/rationale/at), DisputeDecision (decision/decidedBy/rationale/decidedAt/final), DisputeTimelineEntry (typed). Real state machine with VALID_TRANSITIONS map: opened→technician_responded; technician_responded→evidence_review|program_review|appealed; evidence_review/program_review→independent_review|resolved_*|appealed; independent_review→resolved_*|appealed; appealed→resolved_*; resolved_*→closed. DisputeManager: open (validates description + measurement/session reference, emits dispute.opened), respond (transitions to technician_responded), submitForReview (program|independent), review (escalates to independent_review when needs_info or independent reviewer), appeal, resolve (records final decision, transitions to resolved_upheld|resolved_overturned, emits dispute.resolved), close (only from resolved_*), get, list (filter by status/technicianId/programId/reason/measurementId/sessionId/disputedBy), getTimeline, addEvidence (appends + records timeline entry), getStats (byStatus/byReason/resolutionRate/overturnRate/avgResolutionMs). Throws TechnicianError on invalid transitions. Real state machine verified by smoke test.
+- Built `src/technicians/devices/index.ts` (~430 lines): DeviceId (from core), DeviceType (12 program-defined device types + open string), DeviceStatus (active|calibration_due|decertified|retired), DeviceCalibration (calibratedAt/calibratedBy/result/readings/expiresAt/notes), DeviceCertification (certifiedAt/certifiedBy/authority/certificateReference/expiresAt), DeviceMaintenance (at/type: calibration|repair|firmware_update|inspection|cleaning|battery_replacement/performedBy/notes/cost), DeviceOwnership (ownerId/ownerType/since/until), MeasurementDevice (id/serialNumber/model/manufacturer/firmwareVersion/type/trustLevel/ownerId/ownerType/assignedToTechnicianId/registeredAt/lastCalibratedAt/calibrationExpiresAt/certified/certifiedAt/certifiedBy/certification/maintenanceHistory/capabilities/status/ownershipHistory/metadata). DeviceRegistry: register (validates serialNumber uniqueness, defaults trustLevel "registered", emits device.registered), get, getBySerial, list (filter by type/owner/assignedToTechnician/trustLevel/status/certified), calibrate (records calibration, updates lastCalibratedAt + calibrationExpiresAt, updates trustLevel to "calibrated" on pass / status "decertified" on fail), certify (marks certified, updates trustLevel "certified", records DeviceCertification), recordMaintenance, updateFirmware (records firmware_update maintenance entry), transferOwnership (closes current ownership entry, opens new, re-indexes), retire (status "retired", drops certified), isCalibrationCurrent (real date comparison against calibrationExpiresAt), isCertified (checks certified flag + certification.expiresAt), sweepCalibrationDue (scheduler-friendly sweep marking devices with expired calibration as "calibration_due"), getDevicesForTechnician (by assignment OR ownership), getStats (byStatus/byTrustLevel/byType/certifiedCount/calibrationDueCount). Real calibration-expiry checking + real maintenance/ownership history.
+- Built `src/technicians/chain-of-custody/index.ts` (~420 lines): ChainOfCustodyId (from core), CustodyStep (9 canonical steps: requested|collected|device_captured|evidence_uploaded|technician_signed|participant_confirmed|program_validated|verified|sealed), CustodyRole, CustodyLink (step/actor/role/at/location/deviceIds/evidenceIds/auditReference/consentReference/notes), ChainOfCustody (id/measurementId/sessionId/links/complete/createdAt/sealedAt/sealHash). CUSTODY_STEP_ORDER constant; REPEATABLE_STEPS set (device_captured, evidence_uploaded); STEP_PREREQUISITES map (collected requires requested; verified requires collected; sealed requires verified; etc.) — enforces "can't verify before collect"; REQUIRED_STEPS = [requested, collected, verified]. Real SHA-256 hashing via node:crypto over a canonical link sequence (step|actor|role|at|lat,lon|deviceIds|evidenceIds|auditReference|consentReference|notes joined per link, newline-joined across links). ChainOfCustodyManager: create, addLink (validates first-step-is-requested, monotonic ordering, repeatable-steps rule, prerequisite presence — throws on any violation), get, getForMeasurement, getForSession, seal (validates required steps present, appends implicit "sealed" link, computes SHA-256, marks complete=true + sealedAt + sealHash; emits eks.technician.coc.sealed), verify (recomputes hash + compares to sealHash — returns {valid, expected, actual}), isComplete (required steps present), getTimeline, getGaps (missing required steps), getStats (total/sealed/complete/avgLinksPerChain/byStep). Real SHA-256 tamper-evidence verified: adding a link after seal throws, recomputation matches stored hash. CHAIN_OF_CUSTODY_EVENTS const exported.
+- Built `src/technicians/fraud/index.ts` (~720 lines): FraudAlertId (from core), FraudAlertStatus (open|investigating|confirmed|false_positive|resolved), FraudSignal (type/value/threshold/confidence/detail), FraudRiskScore (technicianId/score 0-100/level/factors/assessedAt), FraudPattern, FraudAlert (full lifecycle), FraudDetector interface (id/type/check), FraudAnalysisContext (rich context: technicianId/participantId/measurementId/sessionId/value/previousValue/collectedAt/profileId+schemaId for store fetch/evidenceHashes/deviceId/technicianLocation/participantLocation/priorVerifications/recentVerifications), VerificationRecord. FRAUD_THRESHOLDS const (IMPROBABLE_CHANGE_PCT 0.5, LOCATION_MAX_KM 100, FREQUENCY_MAX_IN_WINDOW 10, COLLUSION_MIN_DISTINCT 3, COLLUSION_MIN_TOTAL 10, IMPOSSIBLE_TRAVEL_KMH 200). Real haversineKm() exported (great-circle distance via haversine formula, EARTH_RADIUS_KM=6371, verified NYC→LA = 3936 km). Real mean/stddev helpers. 7 pre-registered detectors: (1) improbable_improvement (fetches prior measurements via getMeasurements() with try/catch fallback to ctx.previousValue, flags |Δ|/|prior| > 50%); (2) duplicate_evidence (maintains internal hash→measurementId[] index, flags same hash on multiple measurements); (3) device_anomaly (uses getDevices() with try/catch, flags expired/missing calibration, decertified status, unverified trust); (4) location_inconsistency (haversine technician↔participant > 100 km); (5) frequency_abuse (real mean+3σ on per-hour verification counts when ≥5 buckets, else absolute threshold of 10/hour); (6) suspicious_verification_pattern (collusion: <3 distinct participants across ≥10 verifications); (7) impossible_travel (haversine + time delta, required speed > 200 km/h). FraudDetectionEngine: registerDetector, listDetectors, analyze (runs all detectors, updates hash index, aggregates signals, infers severity from confidence+count), createAlert (emits fraud.alert), getAlert, listAlerts, investigate/confirm/markFalsePositive/resolve (state transitions with validation), riskScore (sums severity weights: low 10/medium 25/high 50/critical 80, capped at 100, level low/medium/high/critical), getStats (byType/bySeverity/byStatus/confirmationRate/falsePositiveRate). All 7 detectors verified via smoke test (improbable change 60% flagged, NYC-LA distance flagged, 15 verifications/15min flagged as frequency abuse, 15 verifications from 1 participant flagged as collusion, duplicate hash flagged on second measurement, NYC→LA in 1 hour flagged as impossible travel).
+- Built `src/technicians/payments/index.ts` (~400 lines): PaymentIntentId/PaymentProviderId/PaymentIntent (from core — NO payment business logic; the platform delegates to providers), PaymentProvider interface (id/isConfigured/createIntent/confirmIntent/refund/payout/getIntent), PaySwapProvider class implementing PaymentProvider — real in-memory simulation of the intent lifecycle (pending→confirmed→payout_confirmed with refund branch from confirmed|payout_confirmed; throws TechnicianError on invalid transitions), PaymentEvent (type/intentId/provider/at/metadata), PaymentEventType (intent_created|intent_confirmed|intent_failed|intent_refunded|payout_confirmed|payout_failed), CreateIntentInput, ListIntentsFilter. PaymentManager: registerProvider, getProvider, listProviders, setDefault (validates provider is registered), getDefault, createIntent (delegates to default provider, validates isConfigured, stores intent, indexes by reference, emits payment.intent_created), confirmIntent (delegates, emits payment.confirmed), refund, payout, getIntent (refreshes from provider cache), listIntents (filter by status/reference/provider), getIntentsByReference, handleEvent (webhook-style: refreshes intent from provider, emits mapped technician-domain event), getStats (byStatus/byProvider/totalAmount/confirmedAmount). Pre-registers PaySwap as default provider on construction. Provider swap verified by smoke test (subclass PaySwapProvider with id="manual" produces intents with provider="manual" via `this.id` instead of hardcoded "payswap"). PAYMENT_EVENTS const exported (extends TECHNICIAN_EVENTS with refund/payout/failed).
+- Verified with `npx tsc --noEmit --strict`: zero TypeScript errors in any of the six new files (remaining 5 errors are all pre-existing in examples/, skills/, and src/technicians/eligibility/index.ts which is being built by m5-2 in parallel).
+- Wrote and ran a 40+ assertion smoke test under Bun covering every public method of every subsystem: reputation (default 50/100, feedback EMA, session update, response time, fraud penalty, weighted-average matches expected sum(factor*weight)/sum(weights)), disputes (open→respond→submitForReview→review→resolve state machine + invalid-transition throws), devices (register→calibrate→certify lifecycle + sweep marks expired devices as calibration_due), chain-of-custody (full 9-step chain + seal + verify + tamper-add-after-seal throws + out-of-order prerequisite throws "verified requires collected"), fraud (all 7 detectors fire on real signals + haversine NYC-LA = 3936 km + risk score increases with open alerts + state transitions), payments (intent lifecycle pending→confirmed→payout_confirmed→refunded + provider swap to manual + handleEvent webhook-style dispatch). All 40+ assertions pass. Smoke test scaffold then removed (per established convention).
+- Did NOT create src/technicians/index.ts (orchestrator owns the main barrel, per task constraint).
+
+Stage Summary:
+- Files created (6):
+  * `src/technicians/reputation/index.ts` (~620 lines) — multi-factor reputation with weighted-average scoring, real EMA per factor, real trend detection, real exponential time-decay (90-day half-life), getReputation() singleton.
+  * `src/technicians/disputes/index.ts` (~360 lines) — full dispute resolution state machine (opened→technician_responded→evidence_review|program_review→independent_review→appealed→resolved_upheld|resolved_overturned→closed) with timeline tracking and stats, getDisputes() singleton.
+  * `src/technicians/devices/index.ts` (~430 lines) — certified measurement device registry with calibration/certification/maintenance/ownership history, real calibration-expiry sweep, getDevices() singleton.
+  * `src/technicians/chain-of-custody/index.ts` (~420 lines) — tamper-evident custody chains with real SHA-256 sealing, real step-ordering + prerequisite validation ("can't verify before collect"), real gap detection, getChainOfCustody() singleton.
+  * `src/technicians/fraud/index.ts` (~720 lines) — fraud detection foundation with 7 pre-registered detectors, real haversine distance, real mean+3σ statistics, real duplicate-evidence index, real risk scoring, getFraudDetection() singleton.
+  * `src/technicians/payments/index.ts` (~400 lines) — PaymentProvider abstraction + PaySwap default provider (real intent lifecycle simulation), provider swap (Stripe/manual/custom), webhook-style event handling, getPayments() singleton.
+- Key decisions:
+  * Reputation weights: honored the task spec's 9 listed weights exactly (sum 1.0); the 10th factor `consistency` is tracked but has weight 0 so the weighted average matches the spec — programs can override REPUTATION_FACTOR_WEIGHTS to give consistency a real weight without touching spec-listed factors.
+  * Reputation penalty model: sample scores are below the 50 baseline (low 30/medium 15/high 5/critical 0) so a single fraud indicator immediately drops the factor below neutral — verified asymmetric vs rewards.
+  * Reputation EMA alpha = max(0.1, 1/(sampleCount+1)) so early samples move the score quickly and later samples stabilise.
+  * Dispute state machine: `appealed` is reachable from any pre-resolution state (opened-resolved), reflecting real-world appeal processes.
+  * Chain-of-custody prerequisites: implemented as a separate STEP_PREREQUISITES map keyed off CustodyStep, so "verified requires collected" is enforced even when the canonical order would otherwise allow the monotonic-index check to pass.
+  * Chain-of-custody sealing: the implicit "sealed" link is appended only if the last link isn't already "sealed", and the sealHash covers every field of every link in canonical form.
+  * Fraud detection: detectors are pluggable via registerDetector(); the duplicate-evidence index is maintained inside the engine (analyze() updates it before running the detector so subsequent analyses can observe duplicates).
+  * Fraud detection cross-module imports: `getMeasurements` from `@/health` and `getDevices` from `../devices` are imported statically (no circular dependency) but wrapped in try/catch at call sites so a missing store degrades gracefully to "no signal" rather than crashing.
+  * Payments: PaySwapProvider.createIntent uses `this.id` (not a hardcoded "payswap") so subclasses overriding `id` produce correctly-attributed intents — verified via smoke test by subclassing to create a "manual" provider.
+  * All six files: `import "server-only"` at top; pure TS, strict, ESM; `import type` for types; node:crypto for SHA-256 (chain-of-custody only); no external deps beyond node:crypto; each file exports a barrel of types + manager class + singleton accessor.
+- Next actions: orchestrator should wire these subsystems into API routes under `src/app/api/technicians/*` and console panels at `/`. The fraud engine's analyze() is the natural hook for a pre-verification pipeline (run analyze() before any session is marked verified; createAlert + auto-suspend technician if severity is critical). The reputation manager's decay() should be wired to the scheduler (run daily). The devices sweepCalibrationDue() should also be wired to the scheduler (run daily). The chain-of-custody seal() should be invoked by the verification pipeline the moment a measurement transitions to "verified".
+
+---
+Task ID: M5-FINAL
+Agent: orchestrator
+Task: Complete Milestone 5 — Health Technician Network & Verification Platform
+
+Work Log:
+- Built 14 technician subsystems under src/technicians/: core, profiles, certifications, accreditation, eligibility, sessions, appointments, discovery, reputation, disputes, devices, chain-of-custody, fraud, payments.
+- Core principle enforced: platform knows ONLY generic concepts (Technician, Certification, Eligibility, Appointment, Measurement Session, Verification, Evidence, Trust, Reputation, Accreditation) — never profession-specific types (nurses, doctors, etc.).
+- Real working logic throughout: real SHA-256 session signatures, real tz-aware availability computation, real haversine distance for discovery + fraud detection, real 9-factor weighted reputation with EMA + time decay, real dispute state machine, real SHA-256 chain-of-custody sealing, real 7-detector fraud engine, real payment intent lifecycle.
+- Payment boundary respected: no payment logic — PaymentProvider interface with PaySwap as default, fully replaceable.
+- Built 8 API routes under /api/technicians/*: list, certifications, appointments, sessions, reputation, disputes, devices, fraud.
+- Built 3 new console sections: Technicians (registry + certs + authorities + devices + fraud), Measurement Sessions (verification workflow + sessions table + chain of custody), Reputation (profiles + 9 factors + trust indicators).
+- Updated platform-server.ts to boot technicians + seed demo data; updated Overview + Footer to reflect M5.
+- Fixed duplicate SessionsSection naming conflict (identity sessions vs technician sessions).
+- Agent Browser end-to-end verification PASSED:
+  * Page loads with 25 nav sections (added Technicians, Measurement Sessions, Reputation).
+  * Technicians: "Health Technician Network" heading, registry with Dr. Abena Owusu + Nurse Kwesi Asare, skills (blood_pressure, ecg), certification types, accreditation authorities (Ghana Ministry of Health), devices, fraud stats.
+  * Measurement Sessions: verification workflow + sessions table + chain of custody.
+  * Reputation: 9-factor weighted scoring + trust indicators.
+  * All technician APIs return 200 (list, certifications, sessions, reputation, devices).
+  * No console errors.
+- 0 TypeScript errors, 0 lint errors across all our code (kernel + identity + programs + health + technicians + API + console).
+
+Stage Summary:
+- Milestone 5 COMPLETE. Technician network (14 subsystems) + 8 API routes + 3 console sections verified working end-to-end.
+- Total platform: 78 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians), 43 API routes, 25 console sections.
+- Success criteria met: Programs can define exactly who is eligible to perform measurements; participants can securely discover, book, and work with trusted technicians; technicians can perform fully auditable, evidence-backed measurement sessions; organizations can manage technician networks at scale; every verified measurement has an immutable chain of custody.

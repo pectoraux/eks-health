@@ -22,6 +22,9 @@ import {
   Ruler,
   LineChart,
   GitBranch,
+  Stethoscope,
+  CalendarCheck,
+  Star,
   Moon,
   Sun,
 } from "lucide-react";
@@ -58,6 +61,9 @@ const NAV: NavItem[] = [
   { id: "schemas", label: "Measurement Schemas", icon: Database, group: "Health Data" },
   { id: "measurements", label: "Measurements", icon: Activity, group: "Health Data" },
   { id: "timeline", label: "Timeline", icon: LineChart, group: "Health Data" },
+  { id: "technicians", label: "Technicians", icon: Stethoscope, group: "Technician Network" },
+  { id: "tech-sessions", label: "Measurement Sessions", icon: CalendarCheck, group: "Technician Network" },
+  { id: "reputation", label: "Reputation", icon: Star, group: "Technician Network" },
 ];
 
 export function Sidebar({
