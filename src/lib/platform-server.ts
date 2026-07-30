@@ -192,6 +192,23 @@ import {
   getDatasets,
   type ResearchError,
 } from "@/research";
+import {
+  bootOrchestrator,
+  orchestratorInfo,
+  orchestratorSnapshot,
+  seedOrchestratorDemoData,
+  getTwin,
+  getContext,
+  getScheduler as getOrchestratorScheduler,
+  getConflicts,
+  getWorkload,
+  getCoordinator,
+  getTimeline,
+  getSharedGoals,
+  getSharedMeasurements,
+  getOrchestrationAnalytics,
+  type OrchestratorError,
+} from "@/orchestrator";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -215,14 +232,16 @@ export function ensurePlatform() {
     seedMarketplaceDemoData();
     bootResearch();
     seedResearchDemoData();
+    bootOrchestrator();
+    seedOrchestratorDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo(), orchestrator: orchestratorInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot(), marketplace: marketplaceSnapshot(), research: researchSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot(), marketplace: marketplaceSnapshot(), research: researchSnapshot(), orchestrator: orchestratorSnapshot() };
 }
 
 export {
@@ -342,6 +361,16 @@ export {
   getInsights,
   getGovernance,
   getDatasets,
+  getTwin,
+  getContext,
+  getOrchestratorScheduler,
+  getConflicts,
+  getWorkload,
+  getCoordinator,
+  getTimeline,
+  getSharedGoals,
+  getSharedMeasurements,
+  getOrchestrationAnalytics,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -357,10 +386,22 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, marketplace: marketplaceInfo().version, research: researchInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, marketplace: marketplaceInfo().version, research: researchInfo().version, orchestrator: orchestratorInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // OrchestratorError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.orchestrator.")) {
+        const e = err as OrchestratorError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_authorized" ? 403 :
+          e.category === "conflict_detected" || e.category === "state_conflict" ? 409 :
+          e.category === "overload" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // ResearchError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.research.")) {
         const e = err as ResearchError;

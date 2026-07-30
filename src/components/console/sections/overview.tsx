@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy, Target, Terminal, Store, FlaskConical } from "lucide-react";
+import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy, Target, Terminal, Store, FlaskConical, Network } from "lucide-react";
 import { SectionHeader, StatCard, Panel, Mono } from "../primitives";
 import type { PlatformSnapshot } from "@/hooks/use-platform";
 
@@ -34,7 +34,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
         <div className="relative z-10">
           <div className="inline-flex items-center gap-2 rounded-full bg-[var(--brand-muted)] px-3 py-1 text-xs font-medium text-[var(--brand)] mb-3">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--brand)] animate-pulse" />
-            Milestone 10 — Research, Evidence &amp; Population Intelligence
+            Milestone 11 — Health Orchestrator, Digital Twin &amp; Cross-Program Intelligence
           </div>
           <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight max-w-3xl">
             Eks-Health Preventive Health Operating System
@@ -73,8 +73,9 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
             <LayerRow icon={<Target className="h-4 w-4" />} name="Mission Engine &amp; AI Runtime" desc="15 subsystems: missions, goals, habits, plans, personalization, knowledge, explainability, notifications + AI core, runtime, safety, agents, workflows, observability" version="v7.0.0-m7" />
             <LayerRow icon={<Terminal className="h-4 w-4" />} name="Developer Platform" desc="10 subsystems: CLI, simulator, visual designer, workflow builder, debugger, inspector, API explorer, docs generator, sample programs" version="v8.0.0-m8" />
             <LayerRow icon={<Store className="h-4 w-4" />} name="Health Marketplace" desc="12 subsystems: discovery, matching, outcomes, evidence, profiles, comparison, collections, monetization, revenue, reviews, analytics" version="v9.0.0-m9" />
-            <LayerRow icon={<FlaskConical className="h-4 w-4" />} name="Research &amp; Population Intelligence" desc="13 subsystems: consent, cohorts, privacy, evidence, population, benchmarks, comparative, workspace, publications, AI insights, governance, datasets" version="v10.0.0-m10" active />
-            <LayerRow icon={<Zap className="h-4 w-4" />} name="Self-Improving Flywheel" desc="More participants → more verified measurements → better evidence → better AI → better Programs → better outcomes → more participants" version="live" />
+            <LayerRow icon={<FlaskConical className="h-4 w-4" />} name="Research &amp; Population Intelligence" desc="13 subsystems: consent, cohorts, privacy, evidence, population, benchmarks, comparative, workspace, publications, AI insights, governance, datasets" version="v10.0.0-m10" />
+            <LayerRow icon={<Network className="h-4 w-4" />} name="Health Orchestrator &amp; Digital Twin" desc="11 subsystems: twin, context, scheduler, conflicts, workload, coordinator, timeline, shared-goals, shared-measurements, analytics" version="v11.0.0-m11" active />
+            <LayerRow icon={<Zap className="h-4 w-4" />} name="True Preventive Health Operating System" desc="The whole ecosystem delivers better outcomes than any individual Program could achieve alone" version="live" />
           </div>
         </Panel>
 

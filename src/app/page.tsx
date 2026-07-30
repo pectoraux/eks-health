@@ -37,6 +37,7 @@ import { AISection } from "@/components/console/sections/ai-runtime";
 import { DeveloperSection } from "@/components/console/sections/developer";
 import { MarketplaceSection } from "@/components/console/sections/marketplace-console";
 import { ResearchSection } from "@/components/console/sections/research-console";
+import { OrchestratorSection } from "@/components/console/sections/orchestrator-console";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -72,7 +73,8 @@ export type ConsoleSection =
   | "ai-runtime"
   | "developer"
   | "marketplace-console"
-  | "research";
+  | "research"
+  | "orchestrator";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");

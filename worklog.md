@@ -1511,3 +1511,100 @@ Stage Summary:
 - Milestone 10 COMPLETE. Research platform (13 subsystems) + 5 API routes + 1 console section verified working end-to-end.
 - Total platform: 140 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians + 12 competitions + 9 missions + 6 ai + 10 developer + 12 marketplace + 13 research), 67 API routes, 33 console sections.
 - Success criteria met: Participants can safely contribute to research while retaining full control; Programs continuously build evidence from real-world verified outcomes; Researchers can conduct large-scale studies without compromising privacy; Governments, universities, NGOs can access trustworthy aggregated insights through secure governance; the platform has established a self-improving knowledge ecosystem where every verified health journey contributes to better preventive healthcare for everyone.
+
+---
+Task ID: M11-0
+Agent: orchestrator
+Task: Begin Milestone 11 — Health Orchestrator, Digital Twin & Cross-Program Intelligence
+
+Work Log:
+- Verified M1-M10 intact (140 subsystems, 0 TS errors, clean lint).
+- Core philosophy: Programs remain independent but cooperate through a neutral orchestration layer. No Program communicates directly with another. The Orchestrator combines capabilities, goals, constraints, dependencies, schedules. The Digital Twin is a real-time representation of the participant's health state.
+- Subsystems: core, twin, context, scheduler, conflicts, workload, coordinator, timeline, shared-goals, shared-measurements, analytics.
+
+Stage Summary:
+- M11 begun. Orchestrator extends missions (cross-program missions) + health (shared measurements) + competitions (shared rewards) + AI (coordinator) + marketplace (installed programs).
+
+---
+Task ID: m11-2
+Agent: general-purpose (orchestrator: scheduler, conflicts, workload, coordinator)
+Task: Build scheduler + conflicts + workload + coordinator
+
+Work Log:
+- Read /home/z/my-project/src/orchestrator/core/index.ts for all orchestrator primitives (ProgramOrchestrationDeclaration, CrossProgramMission, UnifiedPlan, ProgramConflict, ConflictType, ConflictResolution, WorkloadAssessment, CoordinatorDecision, OrchestratorError, ORCHESTRATOR_EVENTS, branded ids + asXxx helpers).
+- Read twin/index.ts and context/index.ts for the established pattern: `import "server-only"`, `import type` for types, value imports for OrchestratorError / asXxx helpers / ORCHESTRATOR_EVENTS, kernel helpers (getEventBus, buildEvent, generateId, getClock) from `@/kernel`, mutable internal record + immutable frozen public surface, `void getEventBus().publish(buildEvent(...))` for emission, singleton `getXxx()` accessor.
+- Confirmed kernel barrel (@/kernel) re-exports generateId, getClock, getEventBus, buildEvent.
+- Created four pure-TS, strict, ESM, zero-dependency subsystems with real logic and no mocks.
+
+Stage Summary:
+- Files created:
+  - src/orchestrator/scheduler/index.ts (SchedulerEngine + getScheduler; real time-block grouping morning/afternoon/evening/weekly; real merging of compatible SchedulePreference entries per block into a single CrossProgramMission ordered by priority then flexibility; real shared-measurement detection via schema cross-reference; real total-minute computation across blocks + standalone; real workload-level classification with thresholds symmetric to the workload balancer; optimizeTiming drops lowest-priority components when a block overflows; emits eks.orchestrator.plan.generated + eks.orchestrator.cross_mission.created; getStats tracks plans, avg programs/plan, avg duration, total cross-missions, total shared measurements).
+  - src/orchestrator/conflicts/index.ts (ConflictResolutionEngine + getConflicts; real pairwise detection across 6 ConflictType axes — schedule_overlap via day-of-week + time-of-day overlap rules with night collapsed into evening and "any" never conflicting; contradictory_recommendation via 8 opposite-rule regex pairs (high-intensity vs no-high-intensity, low-carb vs high-carb, fasting vs requires-food, rest-day vs daily-workout, late-caffeine vs sleep, low-sodium vs high-sodium, low-impact vs running-required, late-workout vs no-late-workout); effort_overload via summed minutes > 120 OR summed physical > 30 (symmetric with workload balancer); measurement_duplication via schema cross-reference; goal_conflict via 5 opposite-goal regex pairs (gain-muscle vs lose-weight, calorie-surplus vs deficit, endurance vs strength, HR increase vs decrease, mobility vs maximal-load); resource_conflict via conflictingPrograms declarations; plan-derived schedule_overlap when any cross-program mission exceeds 90 minutes; real priority-based resolution per conflict type with transparent rationale strings; participant override always wins; emits eks.orchestrator.conflict.detected on detection and eks.orchestrator.conflict.resolved on resolution/override; getStats with by-type/by-severity/auto-resolved/participant-decided/deferred/escalated counts).
+  - src/orchestrator/workload/index.ts (WorkloadBalancer + getWorkload; real per-axis summation across all declarations' EffortEstimate (timeMinutes summed, physical/mental/recovery/complexity averaged to keep 0-10 scale); real level classification (light <30 / moderate <60 / heavy <120 / overloaded ≥120 or physical ≥8); real recommendation generation parameterized by level + axis thresholds (rest-day scheduling, intensity reduction, mental-load reduction, recovery-impact pause, defer non-critical missions); real capacity check that averages incoming effort against the existing average and re-classifies; real greedy priority-ordered reduction suggestions that defer lowest-priority programs until target level is reached; full per-participant history tracking; emits eks.orchestrator.workload.assessed; getStats with by-level distribution, avg minutes/physical/mental, overloaded-participant count).
+  - src/orchestrator/coordinator/index.ts (CoordinatorEngine + getCoordinator; real per-conflict coordinator decision mapping — schedule_overlap→delay, contradictory_recommendation→prioritize, effort_overload→balance, measurement_duplication→merge, goal_conflict→explain, resource_conflict→remove; real duplication-driven merge decisions; real workload-driven balance decisions when level is heavy or overloaded; every decision carries description + rationale + participantExplanation + confidence + 1-3 alternatives with explicit tradeoffs; mergeRecommendations uses real Jaccard token-overlap similarity with stopword filtering and greedy single-linkage clustering (threshold 0.4); detectDuplication scans requiredMeasurements for schemas consumed by multiple programs; explain() returns the full explanation bundle; emits eks.orchestrator.coordinator.decision per decision; getStats with by-type counts, avg confidence, total merges, total duplications).
+- Key decisions:
+  - Every engine uses a mutable internal record type that is frozen into the immutable public contract before returning. Public surfaces never expose mutability. This mirrors the twin's pattern (DigitalHealthTwin readonly fields, mutable internal map).
+  - Thresholds are intentionally symmetric across the four engines (workload light/moderate/heavy/overloaded at 30/60/120 minutes; conflicts effort_overload at 120 minutes + physical 30; scheduler's classifyWorkload at 30/60/120) so the four subsystems never disagree about whether overload exists.
+  - Conflict detection is pairwise and dedupes by (type | sorted programIds | description) so re-running detect() on the same declarations does not produce duplicate conflict records.
+  - The coordinator never makes medical decisions — every goal_conflict and every effort_overload where all programs are high-priority is escalated (resolution="escalated" / decision type="explain") to the participant with a transparent trade-off list. Participant override always trumps any auto-resolution.
+  - Coordinator AI is statistical/heuristic, not LLM-driven: token-overlap similarity, priority comparison, threshold-based classification. Each decision explicitly carries a confidence score (0.6 for explain decisions, 0.7-0.95 for auto-resolved ones) so consumers know exactly how much to trust each. The same inputs/outputs will produce identical decisions on re-runs (deterministic).
+  - Did NOT create src/orchestrator/index.ts (per instructions) — each subsystem exports its own barrel via re-exports of the relevant core types.
+- All real logic, no mocks/placeholders: real time-block grouping + shared-measurement cross-referencing + workload classification; real regex-based contradiction detection across 8 domains + goal opposition across 5 domains + schedule overlap via day/time rules + deduplication; real per-axis effort summation + threshold-based level classification + greedy priority-ordered reductions; real Jaccard token-overlap similarity with stopword filtering + greedy single-linkage clustering for recommendation merging + real trade-off generation per conflict type.
+- Verification: `npx tsc --noEmit` reports ZERO errors across src/orchestrator/scheduler, src/orchestrator/conflicts, src/orchestrator/workload, src/orchestrator/coordinator (and zero across the entire src/orchestrator tree). `npx eslint` on all four files reports ZERO issues. Pre-existing errors in examples/ and skills/ folders are unrelated to this task.
+
+---
+Task ID: m11-3
+Agent: general-purpose (orchestrator: timeline, shared-goals, shared-measurements, analytics)
+Task: Build timeline + shared-goals + shared-measurements + analytics
+
+Work Log:
+- Read core types: UnifiedTimeline, UnifiedTimelineEntry, TimelineEntryType, SharedGoal, SharedMeasurement, ProgramContribution, OrchestratorError, ORCHESTRATOR_EVENTS, and all branded ids from src/orchestrator/core/index.ts.
+- Read established pattern from src/orchestrator/twin/index.ts and src/orchestrator/context/index.ts (manager class + singleton get<Name>(), import "server-only", emit events via getEventBus().publish(buildEvent(...)), no mocks).
+- Inspected @/kernel barrel (generateId, getClock, getEventBus, buildEvent), @/health barrel (getMeasurements, Measurement, MeasurementFilter, asProfileId), @/missions barrel (getMissions, Mission), @/competitions barrel (getCompetitions, Competition), @/programs barrel (getRegistry, ProgramRecord), @/identity barrel (getConsent, ConsentManager.checkAccess).
+- Built src/orchestrator/timeline/index.ts (UnifiedTimelineManager + getTimeline()). Real chronological insertion (newest-first by ISO timestamp desc), real filtering by type/source/dateRange/programId with offset+limit pagination, real getByDate/getRecent/getByProgram/getByType/search/export(JSON|CSV)/getStats, real platform aggregation (aggregateFromPlatform pulls from @/health measurements, @/missions, @/competitions, @/programs registry — all guarded with try/catch). Added listTimelines() and getAllEntries() helpers for global analytics. Emits eks.orchestrator.timeline.updated on every addEntry.
+- Built src/orchestrator/shared-goals/index.ts (SharedGoalEngine + getSharedGoals()). Real contribution aggregation (sum of contributor contributions → currentValue), real progress computation (currentValue/targetValue*100 capped 0-100), real achievement detection on the rising edge (recompute emits eks.orchestrator.shared_goal.updated with action="achieved"). create/get/list/addContributor/removeContributor/updateContribution/checkAchievement/getProgress (per-program share breakdown)/getContributors/getStats all real.
+- Built src/orchestrator/shared-measurements/index.ts (SharedMeasurementRegistry + getSharedMeasurements()). Real authorization check (authorizedPrograms list set at register time), REAL consent validation via @/identity getConsent().checkAccess(participantId, programId, "shared_measurement_consumption", schemaId) — fails closed if identity unavailable or consent missing. Real schema-mismatch validation against the health measurement store. Real deduplication detection (checkDuplicate reports potential savings = programs-1). consume() is idempotent (records consumption once per program). revoke() updates all matching records and emits. getStats reports deduplication savings (consumed beyond first + authorized-but-unconsumed potential). Emits eks.orchestrator.shared_measurement.registered on register/consume/revoke.
+- Built src/orchestrator/analytics/index.ts (OrchestrationAnalytics + getOrchestrationAnalytics()). Decoupled from m11-2 subsystems: reads REAL orchestration data from timeline entries of type "orchestration" with structured metadata.action vocabulary (conflict_detected, conflict_auto_resolved, conflict_participant_decided, merge_missions, cross_program_mission, workload_reduction, shared_measurement, remove_duplicate, unified_goal, delay_recommendation, priority_override) — same vocabulary m11-2 will write to. getParticipantAnalytics aggregates installed programs, conflicts detected/resolved, cross-program missions, shared measurements/goals, twin fatigue+risk, context workload trend. getConflictAnalytics iterates ALL timeline entries globally for total/byType/bySeverity/autoResolvedRate/overrideRate. getWorkloadAnalytics aggregates workload-reduction orchestration entries + twin fatigue-derived levels for distribution/avgMinutes/avgEffort/overloadedRate. getCoordinationEffectiveness computes missionsMergedRate, conflictsAutoResolvedRate, measurementsDeduplicatedRate, participantOverrideRate, and a composite 0-100 overallScore. getOutcomeComparison uses the participant's first orchestration entry as the orchestration-start timestamp and computes mission completion rate / measurement count / timeline volume before vs after — REAL historical comparison. getStats tracks per-method query counters.
+- Added listTwins() to src/orchestrator/twin/index.ts (small additive method, used by workload analytics for global distribution).
+- Verified: npx tsc --noEmit reports zero errors in src/orchestrator/** (all four files + twin edit compile clean).
+- Did NOT create src/orchestrator/index.ts (per instructions; consumers import directly from @/orchestrator/<subsystem>).
+
+Stage Summary:
+- Files created:
+  - src/orchestrator/timeline/index.ts — UnifiedTimelineManager + getTimeline()
+  - src/orchestrator/shared-goals/index.ts — SharedGoalEngine + getSharedGoals()
+  - src/orchestrator/shared-measurements/index.ts — SharedMeasurementRegistry + getSharedMeasurements()
+  - src/orchestrator/analytics/index.ts — OrchestrationAnalytics + getOrchestrationAnalytics()
+- File edited:
+  - src/orchestrator/twin/index.ts — added listTwins() (additive, no breaking changes)
+- Key decisions:
+  - All four files follow the established pattern (import "server-only"; manager class with private Map state; singleton get<Name>(); events via getEventBus().publish(buildEvent(...)); OrchestratorError for validation/not-found/state-conflict; no external deps; no mocks).
+  - Timeline aggregation uses REAL platform subsystems (health measurements, missions, competitions, programs registry) via static imports from @/health, @/missions, @/competitions, @/programs — every call guarded with try/catch so a missing subsystem never breaks aggregation.
+  - Shared-measurements consent check uses @/identity getConsent().checkAccess() and FAILS CLOSED (denies consumption) if identity is unavailable or consent is missing — real consent enforcement.
+  - Analytics is decoupled from m11-2 by reading orchestration events from the unified timeline (which m11-2's conflict/workload/coordinator subsystems will populate). This avoids static imports to modules that don't exist yet and lets analytics work today and become richer when m11-2 lands. Defined a shared ORCH_ACTIONS vocabulary so m11-2 writes metadata.action values analytics already understands.
+  - Cross-subsystem access (timeline → shared-goals → shared-measurements → twin → context) is wired via direct singleton imports inside src/orchestrator/** — no orchestrator barrel created, per instructions.
+- Next: m11-2 (scheduler/conflicts/workload/coordinator) should emit timeline entries of type "orchestration" with metadata.action values from the ORCH_ACTIONS vocabulary so analytics immediately picks them up. m11-3 is complete and ready for integration.
+
+---
+Task ID: M11-FINAL
+Agent: orchestrator
+Task: Complete Milestone 11 — Health Orchestrator, Digital Twin & Cross-Program Intelligence
+
+Work Log:
+- Built 11 orchestrator subsystems under src/orchestrator/: core, twin, context, scheduler, conflicts, workload, coordinator, timeline, shared-goals, shared-measurements, analytics.
+- Core philosophy: Programs remain independent but cooperate through a neutral orchestration layer. No Program communicates directly with another. The Digital Twin is a real-time representation of the participant's health state. AI coordinates recommendations, schedules, measurements, and goals while remaining transparent and explainable.
+- Real working logic throughout: real Digital Twin with versioned state + program contributions + risk indicators + fatigue score, real cross-program scheduler (time-block grouping + shared measurement detection + workload classification), real conflict detection (6 types: schedule_overlap, contradictory_recommendation, effort_overload, measurement_duplication, goal_conflict, resource_conflict) with priority-based resolution + participant override, real workload balancing (effort summation across 5 dimensions + level classification + reduction suggestions), real AI coordinator (Jaccard token-overlap similarity for recommendation merging + per-conflict decision mapping + trade-off generation), real unified timeline (chronological ordering + 12 entry types + platform data aggregation), real shared goals (contribution aggregation + achievement detection), real shared measurements (consent enforcement + deduplication detection).
+- Built 5 API routes under /api/orchestrator/*: twin, timeline, shared-goals, conflicts, workload.
+- Built 1 new console section: Health Orchestrator & Digital Twin (stats + Digital Twin panel + Cross-Program Intelligence panel + Unified Timeline + Orchestration Philosophy).
+- Updated platform-server.ts to boot orchestrator + seed demo data (Digital Twin with goals, risk indicators, fatigue score, program contributions, shared goal); updated Overview + Footer to reflect M11.
+- Agent Browser end-to-end verification PASSED:
+  * Page loads with 34 nav sections (added Health Orchestrator).
+  * Orchestrator: "Health Orchestrator & Digital Twin" heading, stats (Digital Twins, Conflicts Resolved, Coordinator Decisions, Timeline Entries, Shared Goals, Shared Measurements, Workload Assessments, Twin Avg Version).
+  * All orchestrator APIs return 200 (twin, timeline, shared-goals, conflicts, workload).
+  * No console errors.
+- 0 TypeScript errors, 0 lint errors across all our code.
+
+Stage Summary:
+- Milestone 11 COMPLETE. Orchestrator (11 subsystems) + 5 API routes + 1 console section verified working end-to-end.
+- Total platform: 151 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians + 12 competitions + 9 missions + 6 ai + 10 developer + 12 marketplace + 13 research + 11 orchestrator), 72 API routes, 34 console sections.
+- Success criteria met: Participants experience a single coherent health journey even when using many Programs simultaneously; Programs cooperate safely without direct coupling; the Digital Health Twin is the participant's living, privacy-preserving health model; AI coordinates recommendations, schedules, measurements, and goals while remaining transparent and explainable. Eks-Health has evolved from a marketplace of independent Programs into a true Preventive Health Operating System.
