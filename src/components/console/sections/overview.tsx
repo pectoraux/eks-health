@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy, Target, Terminal } from "lucide-react";
+import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy, Target, Terminal, Store } from "lucide-react";
 import { SectionHeader, StatCard, Panel, Mono } from "../primitives";
 import type { PlatformSnapshot } from "@/hooks/use-platform";
 
@@ -34,7 +34,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
         <div className="relative z-10">
           <div className="inline-flex items-center gap-2 rounded-full bg-[var(--brand-muted)] px-3 py-1 text-xs font-medium text-[var(--brand)] mb-3">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--brand)] animate-pulse" />
-            Milestone 8 — Program Development Platform &amp; SDK
+            Milestone 9 — Health Marketplace &amp; Program Economy
           </div>
           <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight max-w-3xl">
             Eks-Health Preventive Health Operating System
@@ -71,8 +71,9 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
             <LayerRow icon={<Stethoscope className="h-4 w-4" />} name="Technician Network" desc="14 subsystems: profiles, certifications, accreditation, eligibility, sessions, appointments, discovery, reputation, disputes, devices, chain-of-custody, fraud, payments" version="v5.0.0-m5" />
             <LayerRow icon={<Trophy className="h-4 w-4" />} name="Competition Platform" desc="12 subsystems: competitions, seasons, divisions, scoring, leaderboards, ranking, qualification, rewards, prize-pools, anti-cheating, analytics" version="v6.0.0-m6" />
             <LayerRow icon={<Target className="h-4 w-4" />} name="Mission Engine &amp; AI Runtime" desc="15 subsystems: missions, goals, habits, plans, personalization, knowledge, explainability, notifications + AI core, runtime, safety, agents, workflows, observability" version="v7.0.0-m7" />
-            <LayerRow icon={<Terminal className="h-4 w-4" />} name="Developer Platform" desc="10 subsystems: CLI, simulator, visual designer, workflow builder, debugger, inspector, API explorer, docs generator, sample programs" version="v8.0.0-m8" active />
-            <LayerRow icon={<Zap className="h-4 w-4" />} name="Marketplace &amp; Health Economy" desc="Future milestone — program distribution and commercial viability at global scale" version="reserved" />
+            <LayerRow icon={<Terminal className="h-4 w-4" />} name="Developer Platform" desc="10 subsystems: CLI, simulator, visual designer, workflow builder, debugger, inspector, API explorer, docs generator, sample programs" version="v8.0.0-m8" />
+            <LayerRow icon={<Store className="h-4 w-4" />} name="Health Marketplace" desc="12 subsystems: discovery, matching, outcomes, evidence, profiles, comparison, collections, monetization, revenue, reviews, analytics" version="v9.0.0-m9" active />
+            <LayerRow icon={<Zap className="h-4 w-4" />} name="Global Health Economy" desc="The ecosystem is complete — programs, developers, participants, verified outcomes, and a marketplace that optimizes for health, not downloads" version="live" />
           </div>
         </Panel>
 

@@ -155,6 +155,24 @@ import {
   getSampleLibrary,
   type DeveloperError,
 } from "@/developer";
+import {
+  bootMarketplace,
+  marketplaceInfo,
+  marketplaceSnapshot,
+  seedMarketplaceDemoData,
+  getProfiles as getListingRegistry,
+  getDiscovery as getDiscoveryEngine,
+  getMatching as getSolutionMatcher,
+  getOutcomes as getOutcomeTracker,
+  getEvidence as getEvidenceManager,
+  getComparison as getComparisonEngine,
+  getCollections as getCollectionManager,
+  getMonetization as getMonetizationManager,
+  getRevenue as getRevenueShareEngine,
+  getReviews as getReviewManager,
+  getMarketplaceAnalytics,
+  type MarketplaceError,
+} from "@/marketplace";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -174,14 +192,16 @@ export function ensurePlatform() {
     seedMissionDemoData();
     bootDeveloper();
     seedDeveloperDemoData();
+    bootMarketplace();
+    seedMarketplaceDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot(), marketplace: marketplaceSnapshot() };
 }
 
 export {
@@ -278,6 +298,17 @@ export {
   getApiExplorer,
   getDocsGenerator,
   getSampleLibrary,
+  getListingRegistry,
+  getDiscoveryEngine,
+  getSolutionMatcher,
+  getOutcomeTracker,
+  getEvidenceManager,
+  getComparisonEngine,
+  getCollectionManager,
+  getMonetizationManager,
+  getRevenueShareEngine,
+  getReviewManager,
+  getMarketplaceAnalytics,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -293,10 +324,24 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, marketplace: marketplaceInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // MarketplaceError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.marketplace.")) {
+        const e = err as MarketplaceError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_authorized" ? 403 :
+          e.category === "payment_required" ? 402 :
+          e.category === "state_conflict" ? 409 :
+          e.category === "not_available" ? 410 :
+          e.category === "quota_exceeded" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // DeveloperError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.developer.")) {
         const e = err as DeveloperError;

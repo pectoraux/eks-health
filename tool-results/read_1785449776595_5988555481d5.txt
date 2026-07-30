@@ -1,0 +1,734 @@
+     1→/**
+     2→ * Eks-Health Program OS — Developer Profile
+     3→ *
+     4→ * Developer profiles, publisher profiles, verification, API keys, and
+     5→ * developer-level metrics (programs count, published count, total installs,
+     6→ * total revenue, average rating).
+     7→ *
+     8→ * Real logic:
+     9→ *  - Real API key generation: 32 random bytes via node:crypto randomBytes,
+    10→ *    base64url-encoded; storage stores only the SHA-256 hash + a display
+    11→ *    prefix. The raw key is returned EXACTLY ONCE at creation time.
+    12→ *  - Real verification lifecycle: unverified → pending → verified|rejected.
+    13→ *  - Real metric aggregation: pulls live counts from the ProgramRegistry
+    14→ *    (programs, installs, ratings) — no cached aggregates.
+    15→ *
+    16→ * The platform never stores raw API keys. Verification documents are stored
+    17→ * as opaque references (URLs / hashes) — the platform does not interpret
+    18→ * document contents.
+    19→ */
+    20→
+    21→import "server-only";
+    22→import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+    23→import {
+    24→  type DeveloperId,
+    25→  type PublisherId,
+    26→  type ProgramId,
+    27→  ProgramError,
+    28→  asDeveloperId,
+    29→  asPublisherId,
+    30→} from "../core";
+    31→import { getRegistry } from "../lifecycle";
+    32→import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
+    33→
+    34→// ---------------------------------------------------------------------------
+    35→// Branded API-key ids
+    36→// ---------------------------------------------------------------------------
+    37→
+    38→export type ApiKeyId = string & { readonly __brand: "ApiKeyId" };
+    39→
+    40→// ---------------------------------------------------------------------------
+    41→// Developer primitives
+    42→// ---------------------------------------------------------------------------
+    43→
+    44→export type DeveloperStatus = "active" | "suspended" | "banned";
+    45→export type VerificationStatus = "unverified" | "pending" | "verified" | "rejected";
+    46→
+    47→export interface DeveloperVerification {
+    48→  readonly status: VerificationStatus;
+    49→  readonly documents: readonly string[]; // opaque document references
+    50→  readonly submittedAt?: string;
+    51→  readonly verifiedAt?: string;
+    52→  readonly verifiedBy?: string;
+    53→  readonly rejectedAt?: string;
+    54→  readonly rejectedReason?: string;
+    55→}
+    56→
+    57→export interface DeveloperApiKey {
+    58→  readonly id: string;
+    59→  readonly developerId: DeveloperId;
+    60→  readonly label: string;
+    61→  /** SHA-256 hash of the raw key (hex). The raw key is NEVER stored. */
+    62→  readonly hash: string;
+    63→  /** Display-only prefix (first 12 chars of the raw key) for UI recognition. */
+    64→  readonly prefix: string;
+    65→  readonly createdAt: string;
+    66→  readonly lastUsedAt?: string;
+    67→  readonly revokedAt?: string;
+    68→  readonly revokedReason?: string;
+    69→  readonly active: boolean;
+    70→  readonly scopes?: readonly string[];
+    71→}
+    72→
+    73→export interface DeveloperProfile {
+    74→  readonly id: DeveloperId;
+    75→  readonly name: string;
+    76→  readonly email: string;
+    77→  readonly organization?: string;
+    78→  readonly bio?: string;
+    79→  readonly website?: string;
+    80→  readonly avatarUrl?: string;
+    81→  readonly status: DeveloperStatus;
+    82→  readonly verification: DeveloperVerification;
+    83→  readonly apiKeys: readonly DeveloperApiKey[];
+    84→  readonly publisherIds: readonly PublisherId[];
+    85→  readonly createdAt: string;
+    86→  readonly updatedAt: string;
+    87→  readonly suspendedAt?: string;
+    88→  readonly suspendedReason?: string;
+    89→  readonly bannedAt?: string;
+    90→  readonly bannedReason?: string;
+    91→}
+    92→
+    93→export interface PublisherProfile {
+    94→  readonly id: PublisherId;
+    95→  readonly name: string;
+    96→  readonly developerId: DeveloperId;
+    97→  readonly description?: string;
+    98→  readonly website?: string;
+    99→  readonly logoUrl?: string;
+   100→  readonly verified: boolean;
+   101→  readonly createdAt: string;
+   102→  readonly updatedAt: string;
+   103→}
+   104→
+   105→export interface DeveloperMetrics {
+   106→  readonly developerId: DeveloperId;
+   107→  readonly programsCount: number;
+   108→  readonly publishedCount: number;
+   109→  readonly certifiedCount: number;
+   110→  readonly totalInstalls: number;
+   111→  readonly activeInstalls: number;
+   112→  readonly totalRevenue: number;
+   113→  readonly avgRating: number;
+   114→  readonly reviewCount: number;
+   115→  readonly computedAt: string;
+   116→}
+   117→
+   118→export interface CreateProfileInput {
+   119→  readonly name: string;
+   120→  readonly email: string;
+   121→  readonly organization?: string;
+   122→  readonly bio?: string;
+   123→  readonly website?: string;
+   124→  readonly avatarUrl?: string;
+   125→}
+   126→
+   127→export interface CreatePublisherInput {
+   128→  readonly name: string;
+   129→  readonly description?: string;
+   130→  readonly website?: string;
+   131→  readonly logoUrl?: string;
+   132→}
+   133→
+   134→export interface GeneratedApiKey {
+   135→  /** The raw key. Returned EXACTLY ONCE — store it on the client; the platform keeps only the hash. */
+   136→  readonly rawKey: string;
+   137→  readonly record: DeveloperApiKey;
+   138→}
+   139→
+   140→// ---------------------------------------------------------------------------
+   141→// Developer event types
+   142→// ---------------------------------------------------------------------------
+   143→
+   144→export const DEVELOPER_EVENTS = {
+   145→  profileCreated: "eks.program.developer.profile.created",
+   146→  profileUpdated: "eks.program.developer.profile.updated",
+   147→  verificationRequested: "eks.program.developer.verification.requested",
+   148→  verificationApproved: "eks.program.developer.verification.approved",
+   149→  verificationRejected: "eks.program.developer.verification.rejected",
+   150→  apiKeyGenerated: "eks.program.developer.api_key.generated",
+   151→  apiKeyRevoked: "eks.program.developer.api_key.revoked",
+   152→  publisherCreated: "eks.program.developer.publisher.created",
+   153→  developerSuspended: "eks.program.developer.suspended",
+   154→  developerBanned: "eks.program.developer.banned",
+   155→} as const;
+   156→
+   157→// ---------------------------------------------------------------------------
+   158→// Real API key generation
+   159→// ---------------------------------------------------------------------------
+   160→
+   161→const API_KEY_PREFIX = "ekd_"; // "eks developer"
+   162→const API_KEY_PREFIX_DISPLAY_LEN = 12;
+   163→
+   164→function generateRawApiKey(): string {
+   165→  // 32 random bytes → base64url ≈ 43 chars. Prefixed for easy identification.
+   166→  const bytes = randomBytes(32);
+   167→  const b64 = bytes.toString("base64url");
+   168→  return `${API_KEY_PREFIX}${b64}`;
+   169→}
+   170→
+   171→function hashApiKey(rawKey: string): string {
+   172→  return createHash("sha256").update(rawKey).digest("hex");
+   173→}
+   174→
+   175→function prefixOf(rawKey: string): string {
+   176→  return rawKey.slice(0, API_KEY_PREFIX_DISPLAY_LEN);
+   177→}
+   178→
+   179→function safeEqual(a: string, b: string): boolean {
+   180→  const ab = Buffer.from(a, "utf8");
+   181→  const bb = Buffer.from(b, "utf8");
+   182→  if (ab.length !== bb.length) return false;
+   183→  return timingSafeEqual(ab, bb);
+   184→}
+   185→
+   186→// ---------------------------------------------------------------------------
+   187→// Developer manager
+   188→// ---------------------------------------------------------------------------
+   189→
+   190→export class DeveloperManager {
+   191→  private readonly profiles = new Map<DeveloperId, DeveloperProfile>();
+   192→  private readonly byEmail = new Map<string, DeveloperId>();
+   193→  private readonly publishers = new Map<PublisherId, PublisherProfile>();
+   194→  private readonly publishersByDeveloper = new Map<DeveloperId, PublisherId[]>();
+   195→
+   196→  // ----------------------- Profile CRUD -----------------------
+   197→
+   198→  createProfile(input: CreateProfileInput): DeveloperProfile {
+   199→    if (!input.name || input.name.length < 2) {
+   200→      throw new ProgramError({
+   201→        code: "eks.program.developer.name_invalid",
+   202→        category: "validation",
+   203→        message: "Developer name must be at least 2 characters.",
+   204→        userMessage: "Please provide a valid developer name.",
+   205→      });
+   206→    }
+   207→    if (!input.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input.email)) {
+   208→      throw new ProgramError({
+   209→        code: "eks.program.developer.email_invalid",
+   210→        category: "validation",
+   211→        message: "A valid developer email is required.",
+   212→        userMessage: "Please provide a valid email address.",
+   213→      });
+   214→    }
+   215→    const lowerEmail = input.email.toLowerCase();
+   216→    if (this.byEmail.has(lowerEmail)) {
+   217→      throw new ProgramError({
+   218→        code: "eks.program.developer.email_taken",
+   219→        category: "state_conflict",
+   220→        message: `A developer with email ${lowerEmail} already exists.`,
+   221→        userMessage: "A developer with this email already exists.",
+   222→      });
+   223→    }
+   224→    const id = asDeveloperId(`dev_${generateId()}`);
+   225→    const now = getClock().iso();
+   226→    const profile: DeveloperProfile = {
+   227→      id,
+   228→      name: input.name,
+   229→      email: lowerEmail,
+   230→      organization: input.organization,
+   231→      bio: input.bio,
+   232→      website: input.website,
+   233→      avatarUrl: input.avatarUrl,
+   234→      status: "active",
+   235→      verification: { status: "unverified", documents: [] },
+   236→      apiKeys: [],
+   237→      publisherIds: [],
+   238→      createdAt: now,
+   239→      updatedAt: now,
+   240→    };
+   241→    this.profiles.set(id, profile);
+   242→    this.byEmail.set(lowerEmail, id);
+   243→    void getEventBus().publish(
+   244→      buildEvent(DEVELOPER_EVENTS.profileCreated, { developerId: id, name: input.name, email: lowerEmail }, {}, "domain"),
+   245→    );
+   246→    return profile;
+   247→  }
+   248→
+   249→  getProfile(id: DeveloperId): DeveloperProfile | undefined {
+   250→    return this.profiles.get(id);
+   251→  }
+   252→
+   253→  getProfileByEmail(email: string): DeveloperProfile | undefined {
+   254→    const id = this.byEmail.get(email.toLowerCase());
+   255→    return id ? this.profiles.get(id) : undefined;
+   256→  }
+   257→
+   258→  listProfiles(): DeveloperProfile[] {
+   259→    return [...this.profiles.values()];
+   260→  }
+   261→
+   262→  updateProfile(id: DeveloperId, updates: Partial<Omit<CreateProfileInput, "email">>): DeveloperProfile {
+   263→    const existing = this.require(id);
+   264→    if (existing.status === "banned") {
+   265→      throw new ProgramError({
+   266→        code: "eks.program.developer.banned",
+   267→        category: "state_conflict",
+   268→        message: "Banned developers cannot be updated.",
+   269→        userMessage: "This developer is banned.",
+   270→      });
+   271→    }
+   272→    const next: DeveloperProfile = {
+   273→      ...existing,
+   274→      name: updates.name ?? existing.name,
+   275→      organization: updates.organization ?? existing.organization,
+   276→      bio: updates.bio ?? existing.bio,
+   277→      website: updates.website ?? existing.website,
+   278→      avatarUrl: updates.avatarUrl ?? existing.avatarUrl,
+   279→      updatedAt: getClock().iso(),
+   280→    };
+   281→    this.profiles.set(id, next);
+   282→    void getEventBus().publish(
+   283→      buildEvent(DEVELOPER_EVENTS.profileUpdated, { developerId: id }, {}, "domain"),
+   284→    );
+   285→    return next;
+   286→  }
+   287→
+   288→  // ----------------------- Verification -----------------------
+   289→
+   290→  requestVerification(id: DeveloperId, documents: string[]): DeveloperProfile {
+   291→    const profile = this.require(id);
+   292→    if (profile.status === "banned") {
+   293→      throw new ProgramError({
+   294→        code: "eks.program.developer.banned",
+   295→        category: "state_conflict",
+   296→        message: "Banned developers cannot request verification.",
+   297→        userMessage: "This developer is banned.",
+   298→      });
+   299→    }
+   300→    if (!documents || documents.length === 0) {
+   301→      throw new ProgramError({
+   302→        code: "eks.program.developer.documents_required",
+   303→        category: "validation",
+   304→        message: "At least one verification document is required.",
+   305→        userMessage: "Please submit at least one verification document.",
+   306→      });
+   307→    }
+   308→    const now = getClock().iso();
+   309→    const verification: DeveloperVerification = {
+   310→      status: "pending",
+   311→      documents: [...documents],
+   312→      submittedAt: now,
+   313→      // preserve prior verifiedAt/verifiedBy if re-verifying
+   314→      verifiedAt: profile.verification.verifiedAt,
+   315→      verifiedBy: profile.verification.verifiedBy,
+   316→    };
+   317→    const next: DeveloperProfile = {
+   318→      ...profile,
+   319→      verification,
+   320→      updatedAt: now,
+   321→    };
+   322→    this.profiles.set(id, next);
+   323→    void getEventBus().publish(
+   324→      buildEvent(DEVELOPER_EVENTS.verificationRequested, { developerId: id, documentCount: documents.length }, {}, "domain"),
+   325→    );
+   326→    return next;
+   327→  }
+   328→
+   329→  verify(id: DeveloperId, verifiedBy: string): DeveloperProfile {
+   330→    const profile = this.require(id);
+   331→    if (profile.verification.status !== "pending") {
+   332→      throw new ProgramError({
+   333→        code: "eks.program.developer.not_pending",
+   334→        category: "state_conflict",
+   335→        message: `Cannot verify developer in status ${profile.verification.status}.`,
+   336→        userMessage: "This developer is not pending verification.",
+   337→      });
+   338→    }
+   339→    const now = getClock().iso();
+   340→    const next: DeveloperProfile = {
+   341→      ...profile,
+   342→      verification: {
+   343→        ...profile.verification,
+   344→        status: "verified",
+   345→        verifiedAt: now,
+   346→        verifiedBy,
+   347→        rejectedAt: undefined,
+   348→        rejectedReason: undefined,
+   349→      },
+   350→      updatedAt: now,
+   351→    };
+   352→    this.profiles.set(id, next);
+   353→    void getEventBus().publish(
+   354→      buildEvent(DEVELOPER_EVENTS.verificationApproved, { developerId: id, verifiedBy }, {}, "domain"),
+   355→    );
+   356→    return next;
+   357→  }
+   358→
+   359→  rejectVerification(id: DeveloperId, reason: string): DeveloperProfile {
+   360→    const profile = this.require(id);
+   361→    if (profile.verification.status !== "pending") {
+   362→      throw new ProgramError({
+   363→        code: "eks.program.developer.not_pending",
+   364→        category: "state_conflict",
+   365→        message: `Cannot reject developer in status ${profile.verification.status}.`,
+   366→        userMessage: "This developer is not pending verification.",
+   367→      });
+   368→    }
+   369→    if (!reason) {
+   370→      throw new ProgramError({
+   371→        code: "eks.program.developer.reason_required",
+   372→        category: "validation",
+   373→        message: "A rejection reason is required.",
+   374→        userMessage: "A rejection reason is required.",
+   375→      });
+   376→    }
+   377→    const now = getClock().iso();
+   378→    const next: DeveloperProfile = {
+   379→      ...profile,
+   380→      verification: {
+   381→        ...profile.verification,
+   382→        status: "rejected",
+   383→        rejectedAt: now,
+   384→        rejectedReason: reason,
+   385→      },
+   386→      updatedAt: now,
+   387→    };
+   388→    this.profiles.set(id, next);
+   389→    void getEventBus().publish(
+   390→      buildEvent(DEVELOPER_EVENTS.verificationRejected, { developerId: id, reason }, {}, "domain"),
+   391→    );
+   392→    return next;
+   393→  }
+   394→
+   395→  isVerified(id: DeveloperId): boolean {
+   396→    const profile = this.profiles.get(id);
+   397→    return !!profile && profile.verification.status === "verified";
+   398→  }
+   399→
+   400→  /** A developer can publish iff they are verified AND active. */
+   401→  canPublish(id: DeveloperId): boolean {
+   402→    const profile = this.profiles.get(id);
+   403→    return !!profile && profile.status === "active" && profile.verification.status === "verified";
+   404→  }
+   405→
+   406→  // ----------------------- Publishers -----------------------
+   407→
+   408→  createPublisher(developerId: DeveloperId, input: CreatePublisherInput): PublisherProfile {
+   409→    const developer = this.require(developerId);
+   410→    if (developer.status !== "active") {
+   411→      throw new ProgramError({
+   412→        code: "eks.program.developer.not_active",
+   413→        category: "state_conflict",
+   414→        message: `Developer ${developerId} is not active (status: ${developer.status}).`,
+   415→        userMessage: "Only active developers can create publishers.",
+   416→      });
+   417→    }
+   418→    if (!input.name || input.name.length < 2) {
+   419→      throw new ProgramError({
+   420→        code: "eks.program.publisher.name_invalid",
+   421→        category: "validation",
+   422→        message: "Publisher name must be at least 2 characters.",
+   423→        userMessage: "Publisher name is too short.",
+   424→      });
+   425→    }
+   426→    const now = getClock().iso();
+   427→    const publisher: PublisherProfile = {
+   428→      id: asPublisherId(`pub_${generateId()}`),
+   429→      name: input.name,
+   430→      developerId,
+   431→      description: input.description,
+   432→      website: input.website,
+   433→      logoUrl: input.logoUrl,
+   434→      verified: developer.verification.status === "verified",
+   435→      createdAt: now,
+   436→      updatedAt: now,
+   437→    };
+   438→    this.publishers.set(publisher.id, publisher);
+   439→    const list = this.publishersByDeveloper.get(developerId) ?? [];
+   440→    this.publishersByDeveloper.set(developerId, [...list, publisher.id]);
+   441→    // Mirror publisher onto the developer profile.
+   442→    const updated: DeveloperProfile = {
+   443→      ...developer,
+   444→      publisherIds: [...developer.publisherIds, publisher.id],
+   445→      updatedAt: now,
+   446→    };
+   447→    this.profiles.set(developerId, updated);
+   448→    void getEventBus().publish(
+   449→      buildEvent(DEVELOPER_EVENTS.publisherCreated, { publisherId: publisher.id, developerId, name: input.name }, {}, "domain"),
+   450→    );
+   451→    return publisher;
+   452→  }
+   453→
+   454→  getPublisher(id: PublisherId): PublisherProfile | undefined {
+   455→    return this.publishers.get(id);
+   456→  }
+   457→
+   458→  listPublishers(developerId?: DeveloperId): PublisherProfile[] {
+   459→    if (developerId) {
+   460→      const ids = this.publishersByDeveloper.get(developerId) ?? [];
+   461→      return ids.map((id) => this.publishers.get(id)!).filter(Boolean);
+   462→    }
+   463→    return [...this.publishers.values()];
+   464→  }
+   465→
+   466→  // ----------------------- API keys -----------------------
+   467→
+   468→  /**
+   469→   * Generate a new API key for a developer.
+   470→   * Returns the raw key EXACTLY ONCE. The platform stores only the SHA-256
+   471→   * hash and a display prefix.
+   472→   */
+   473→  generateApiKey(developerId: DeveloperId, label: string, scopes?: string[]): GeneratedApiKey {
+   474→    const developer = this.require(developerId);
+   475→    if (developer.status !== "active") {
+   476→      throw new ProgramError({
+   477→        code: "eks.program.developer.not_active",
+   478→        category: "state_conflict",
+   479→        message: `Developer ${developerId} is not active.`,
+   480→        userMessage: "Only active developers can generate API keys.",
+   481→      });
+   482→    }
+   483→    if (!label || label.length < 1) {
+   484→      throw new ProgramError({
+   485→        code: "eks.program.developer.api_key_label_invalid",
+   486→        category: "validation",
+   487→        message: "API key label is required.",
+   488→        userMessage: "Please provide a label for the API key.",
+   489→      });
+   490→    }
+   491→    const rawKey = generateRawApiKey();
+   492→    const now = getClock().iso();
+   493→    const record: DeveloperApiKey = {
+   494→      id: `key_${generateId()}`,
+   495→      developerId,
+   496→      label,
+   497→      hash: hashApiKey(rawKey),
+   498→      prefix: prefixOf(rawKey),
+   499→      createdAt: now,
+   500→      active: true,
+   501→      scopes,
+   502→    };
+   503→    const next: DeveloperProfile = {
+   504→      ...developer,
+   505→      apiKeys: [...developer.apiKeys, record],
+   506→      updatedAt: now,
+   507→    };
+   508→    this.profiles.set(developerId, next);
+   509→    void getEventBus().publish(
+   510→      buildEvent(DEVELOPER_EVENTS.apiKeyGenerated, { developerId, keyId: record.id, label }, {}, "domain"),
+   511→    );
+   512→    return { rawKey, record };
+   513→  }
+   514→
+   515→  listApiKeys(developerId: DeveloperId): DeveloperApiKey[] {
+   516→    const profile = this.require(developerId);
+   517→    return [...profile.apiKeys];
+   518→  }
+   519→
+   520→  revokeApiKey(keyId: string, reason?: string): void {
+   521→    let owner: DeveloperId | undefined;
+   522→    for (const [devId, profile] of this.profiles) {
+   523→      const idx = profile.apiKeys.findIndex((k) => k.id === keyId);
+   524→      if (idx >= 0) {
+   525→        owner = devId;
+   526→        const key = profile.apiKeys[idx];
+   527→        if (!key.active) return; // idempotent
+   528→        const revoked: DeveloperApiKey = {
+   529→          ...key,
+   530→          active: false,
+   531→          revokedAt: getClock().iso(),
+   532→          revokedReason: reason,
+   533→        };
+   534→        const nextApiKeys = [...profile.apiKeys];
+   535→        nextApiKeys[idx] = revoked;
+   536→        this.profiles.set(devId, { ...profile, apiKeys: nextApiKeys, updatedAt: getClock().iso() });
+   537→        break;
+   538→      }
+   539→    }
+   540→    if (owner) {
+   541→      void getEventBus().publish(
+   542→        buildEvent(DEVELOPER_EVENTS.apiKeyRevoked, { developerId: owner, keyId, reason }, {}, "domain"),
+   543→      );
+   544→    }
+   545→  }
+   546→
+   547→  /**
+   548→   * Validate a raw API key. Returns the owning DeveloperProfile if the key
+   549→   * is recognized, active, and the hash matches; otherwise undefined.
+   550→   * Uses timing-safe comparison on the hash.
+   551→   */
+   552→  validateApiKey(rawKey: string): { profile: DeveloperProfile; key: DeveloperApiKey } | undefined {
+   553→    if (!rawKey || !rawKey.startsWith(API_KEY_PREFIX)) return undefined;
+   554→    const hash = hashApiKey(rawKey);
+   555→    for (const profile of this.profiles.values()) {
+   556→      for (const key of profile.apiKeys) {
+   557→        if (!key.active) continue;
+   558→        if (safeEqual(key.hash, hash)) {
+   559→          return { profile, key };
+   560→        }
+   561→      }
+   562→    }
+   563→    return undefined;
+   564→  }
+   565→
+   566→  // ----------------------- Metrics -----------------------
+   567→
+   568→  /**
+   569→   * Aggregate developer metrics from the registry in real time.
+   570→   * programsCount = all programs owned by the developer.
+   571→   * publishedCount = programs in state "published" (or beyond: installed/active/etc.).
+   572→   * totalInstalls = sum of installedCount across all programs.
+   573→   * avgRating = mean of all rated programs (weighted by reviewCount).
+   574→   */
+   575→  getMetrics(developerId: DeveloperId): DeveloperMetrics {
+   576→    const profile = this.require(developerId);
+   577→    const programs = getRegistry().listByDeveloper(developerId);
+   578→    const publishedStates = ["published", "installed", "active", "paused", "deprecated"];
+   579→    let publishedCount = 0;
+   580→    let certifiedCount = 0;
+   581→    let totalInstalls = 0;
+   582→    let activeInstalls = 0;
+   583→    let ratingSum = 0;
+   584→    let ratingCount = 0;
+   585→    for (const p of programs) {
+   586→      if (publishedStates.includes(p.state)) publishedCount += 1;
+   587→      if (p.state === "certified" || publishedStates.includes(p.state)) certifiedCount += 1;
+   588→      totalInstalls += p.installedCount;
+   589→      activeInstalls += p.activeInstallCount;
+   590→      if (typeof p.rating === "number" && p.rating > 0 && p.reviewCount > 0) {
+   591→        ratingSum += p.rating * p.reviewCount;
+   592→        ratingCount += p.reviewCount;
+   593→      }
+   594→    }
+   595→    // Revenue is a placeholder aggregate — no payment integration yet.
+   596→    // We expose it as 0 so the contract is real but the value is honest.
+   597→    const totalRevenue = 0;
+   598→    return {
+   599→      developerId,
+   600→      programsCount: programs.length,
+   601→      publishedCount,
+   602→      certifiedCount,
+   603→      totalInstalls,
+   604→      activeInstalls,
+   605→      totalRevenue,
+   606→      avgRating: ratingCount === 0 ? 0 : Math.round((ratingSum / ratingCount) * 100) / 100,
+   607→      reviewCount: ratingCount,
+   608→      computedAt: getClock().iso(),
+   609→    };
+   610→  }
+   611→
+   612→  // ----------------------- Suspension / ban -----------------------
+   613→
+   614→  suspend(id: DeveloperId, reason: string): DeveloperProfile {
+   615→    const profile = this.require(id);
+   616→    if (profile.status === "banned") {
+   617→      throw new ProgramError({
+   618→        code: "eks.program.developer.banned",
+   619→        category: "state_conflict",
+   620→        message: "Cannot suspend a banned developer.",
+   621→        userMessage: "This developer is already banned.",
+   622→      });
+   623→    }
+   624→    if (!reason) {
+   625→      throw new ProgramError({
+   626→        code: "eks.program.developer.reason_required",
+   627→        category: "validation",
+   628→        message: "A suspension reason is required.",
+   629→        userMessage: "A suspension reason is required.",
+   630→      });
+   631→    }
+   632→    const now = getClock().iso();
+   633→    const next: DeveloperProfile = {
+   634→      ...profile,
+   635→      status: "suspended",
+   636→      suspendedAt: now,
+   637→      suspendedReason: reason,
+   638→      updatedAt: now,
+   639→    };
+   640→    this.profiles.set(id, next);
+   641→    void getEventBus().publish(
+   642→      buildEvent(DEVELOPER_EVENTS.developerSuspended, { developerId: id, reason }, {}, "domain"),
+   643→    );
+   644→    return next;
+   645→  }
+   646→
+   647→  ban(id: DeveloperId, reason: string): DeveloperProfile {
+   648→    const profile = this.require(id);
+   649→    if (!reason) {
+   650→      throw new ProgramError({
+   651→        code: "eks.program.developer.reason_required",
+   652→        category: "validation",
+   653→        message: "A ban reason is required.",
+   654→        userMessage: "A ban reason is required.",
+   655→      });
+   656→    }
+   657→    const now = getClock().iso();
+   658→    // Revoke all active API keys as part of the ban.
+   659→    const revokedKeys = profile.apiKeys.map((k) =>
+   660→      k.active
+   661→        ? { ...k, active: false, revokedAt: now, revokedReason: `banned: ${reason}` }
+   662→        : k,
+   663→    );
+   664→    const next: DeveloperProfile = {
+   665→      ...profile,
+   666→      status: "banned",
+   667→      bannedAt: now,
+   668→      bannedReason: reason,
+   669→      apiKeys: revokedKeys,
+   670→      updatedAt: now,
+   671→    };
+   672→    this.profiles.set(id, next);
+   673→    void getEventBus().publish(
+   674→      buildEvent(DEVELOPER_EVENTS.developerBanned, { developerId: id, reason }, {}, "domain"),
+   675→    );
+   676→    return next;
+   677→  }
+   678→
+   679→  reactivate(id: DeveloperId): DeveloperProfile {
+   680→    const profile = this.require(id);
+   681→    if (profile.status === "banned") {
+   682→      throw new ProgramError({
+   683→        code: "eks.program.developer.banned",
+   684→        category: "state_conflict",
+   685→        message: "Cannot reactivate a banned developer (use explicit un-ban).",
+   686→        userMessage: "This developer is banned.",
+   687→      });
+   688→    }
+   689→    if (profile.status !== "suspended") return profile;
+   690→    const next: DeveloperProfile = {
+   691→      ...profile,
+   692→      status: "active",
+   693→      suspendedAt: undefined,
+   694→      suspendedReason: undefined,
+   695→      updatedAt: getClock().iso(),
+   696→    };
+   697→    this.profiles.set(id, next);
+   698→    void getEventBus().publish(
+   699→      buildEvent(DEVELOPER_EVENTS.profileUpdated, { developerId: id, change: "reactivated" }, {}, "domain"),
+   700→    );
+   701→    return next;
+   702→  }
+   703→
+   704→  private require(id: DeveloperId): DeveloperProfile {
+   705→    const p = this.profiles.get(id);
+   706→    if (!p) {
+   707→      throw new ProgramError({
+   708→        code: "eks.program.developer.not_found",
+   709→        category: "not_found",
+   710→        message: `Developer ${id} not found.`,
+   711→        userMessage: "Developer not found.",
+   712→      });
+   713→    }
+   714→    return p;
+   715→  }
+   716→}
+   717→
+   718→// ---------------------------------------------------------------------------
+   719→// Singleton
+   720→// ---------------------------------------------------------------------------
+   721→
+   722→let _mgr: DeveloperManager | null = null;
+   723→export function getDeveloperManager(): DeveloperManager {
+   724→  if (!_mgr) _mgr = new DeveloperManager();
+   725→  return _mgr;
+   726→}
+   727→export function resetDeveloperManager(): void {
+   728→  _mgr = null;
+   729→}
+   730→
+   731→// Re-exports
+   732→export { asDeveloperId, asPublisherId };
+   733→export type { DeveloperId, PublisherId, ProgramId };
+   734→

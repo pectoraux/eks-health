@@ -18,7 +18,7 @@ import { ComplianceSection } from "@/components/console/sections/compliance";
 import { ArchitectureSection } from "@/components/console/sections/architecture";
 import { ProgramsSection } from "@/components/console/sections/programs";
 import { ProgramDetailSection } from "@/components/console/sections/program-detail";
-import { MarketplaceSection } from "@/components/console/sections/marketplace";
+import { MarketplaceSection as ProgramMarketplaceSection } from "@/components/console/sections/marketplace";
 import { CertificationSection } from "@/components/console/sections/certification";
 import { SdkSection } from "@/components/console/sections/sdk";
 import { HealthOverviewSection } from "@/components/console/sections/health-overview";
@@ -35,6 +35,7 @@ import { PrizePoolsSection } from "@/components/console/sections/prize-pools";
 import { MissionsSection } from "@/components/console/sections/missions";
 import { AISection } from "@/components/console/sections/ai-runtime";
 import { DeveloperSection } from "@/components/console/sections/developer";
+import { MarketplaceSection } from "@/components/console/sections/marketplace-console";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -68,7 +69,8 @@ export type ConsoleSection =
   | "prize-pools"
   | "missions"
   | "ai-runtime"
-  | "developer";
+  | "developer"
+  | "marketplace-console";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -152,7 +154,7 @@ function SectionRouter({
     case "program-detail":
       return <ProgramDetailSection data={data} onRefresh={refresh} programId={selectedProgramId} onBack={() => onSelectProgramBack()} />;
     case "marketplace":
-      return <MarketplaceSection data={data} />;
+      return <ProgramMarketplaceSection data={data} />;
     case "certification":
       return <CertificationSection data={data} onRefresh={refresh} />;
     case "sdk":
@@ -183,6 +185,8 @@ function SectionRouter({
       return <AISection data={data} />;
     case "developer":
       return <DeveloperSection data={data} />;
+    case "marketplace-console":
+      return <MarketplaceSection data={data} />;
   }
 
   function onSelectProgramBack() {

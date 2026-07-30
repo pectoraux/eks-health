@@ -11,6 +11,7 @@ export interface PlatformSnapshot {
   competitions: unknown;
   missions: unknown;
   developer: unknown;
+  marketplace: unknown;
 }
 
 export interface ApiResult<T> {

@@ -76,6 +76,7 @@ const NAV: NavItem[] = [
   { id: "missions", label: "Missions & Habits", icon: Target, group: "Missions & AI" },
   { id: "ai-runtime", label: "AI Runtime", icon: Bot, group: "Missions & AI" },
   { id: "developer", label: "Developer Platform", icon: Terminal, group: "Developer" },
+  { id: "marketplace-console", label: "Health Marketplace", icon: Store, group: "Marketplace" },
 ];
 
 export function Sidebar({
