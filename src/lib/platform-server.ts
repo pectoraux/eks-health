@@ -124,6 +124,21 @@ import {
   getCompetitionAnalytics as getCompetitionAnalyticsEngine,
   type CompetitionError,
 } from "@/competitions";
+import {
+  bootMissions,
+  missionsInfo,
+  missionsSnapshot,
+  seedMissionDemoData,
+  getMissions as getMissionManager,
+  getGoals as getGoalManager,
+  getHabits as getHabitManager,
+  getPlans as getPlanManager,
+  getKnowledge as getKnowledgeManager,
+  getPersonalization as getPersonalizationEngine,
+  getExplainability as getExplainabilityEngine,
+  getReminders as getReminderManager,
+  type MissionError,
+} from "@/missions";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -139,14 +154,16 @@ export function ensurePlatform() {
     seedTechnicianDemoData();
     bootCompetitions();
     seedCompetitionDemoData();
+    bootMissions();
+    seedMissionDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot() };
 }
 
 export {
@@ -226,6 +243,14 @@ export {
   getPrizePoolManager,
   getAntiCheatEngine,
   getCompetitionAnalyticsEngine,
+  getMissionManager,
+  getGoalManager,
+  getHabitManager,
+  getPlanManager,
+  getKnowledgeManager,
+  getPersonalizationEngine,
+  getExplainabilityEngine,
+  getReminderManager,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -241,10 +266,23 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // MissionError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && ((err as { code: string }).code.startsWith("eks.mission.") || (err as { code: string }).code.startsWith("eks.ai."))) {
+        const e = err as MissionError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "not_authorized" || e.category === "ai_safety_violation" ? 403 :
+          e.category === "state_conflict" || e.category === "version_conflict" ? 409 :
+          e.category === "workflow_invalid" ? 422 :
+          e.category === "quota_exceeded" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // CompetitionError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.competition.")) {
         const e = err as CompetitionError;

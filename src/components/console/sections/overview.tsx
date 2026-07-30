@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy } from "lucide-react";
+import { Activity, Boxes, Users, ShieldCheck, Zap, Globe2, Layers, Lock, HeartPulse, Stethoscope, Trophy, Target } from "lucide-react";
 import { SectionHeader, StatCard, Panel, Mono } from "../primitives";
 import type { PlatformSnapshot } from "@/hooks/use-platform";
 
@@ -11,6 +11,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
   const health = (data.health as Record<string, unknown>) ?? {};
   const technicians = (data.technicians as Record<string, unknown>) ?? {};
   const competitions = (data.competitions as Record<string, unknown>) ?? {};
+  const missions = (data.missions as Record<string, unknown>) ?? {};
   const services = (kernel.services as unknown[]) ?? [];
   const contexts = (kernel.contexts as unknown[]) ?? [];
   const accounts = (identity.accounts as unknown[]) ?? [];
@@ -21,6 +22,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
   const techStats = (technicians.technicianStats as { total?: number; active?: number; totalSessions?: number }) ?? {};
   const compList = (competitions.competitions as unknown[]) ?? [];
   const compStats = (competitions.competitionStats as { total?: number; totalParticipants?: number }) ?? {};
+  const missionStats = (missions.missions as { stats?: { total?: number; active?: number; completed?: number } })?.stats ?? {};
   const marketplaceStats = (programs.marketplace as { stats?: { total?: number; published?: number } })?.stats ?? {};
   const auditCounts = (identity.audit as { count?: Record<string, number> })?.count ?? {};
   const totalAudit = Object.values(auditCounts).reduce((a, b) => a + (b as number), 0);
@@ -32,7 +34,7 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
         <div className="relative z-10">
           <div className="inline-flex items-center gap-2 rounded-full bg-[var(--brand-muted)] px-3 py-1 text-xs font-medium text-[var(--brand)] mb-3">
             <span className="h-1.5 w-1.5 rounded-full bg-[var(--brand)] animate-pulse" />
-            Milestone 6 — Competition, Scoring &amp; Incentive Engine
+            Milestone 7 — Mission Engine, Behavior Change &amp; AI Program Runtime
           </div>
           <h1 className="text-3xl sm:text-4xl font-semibold tracking-tight max-w-3xl">
             Eks-Health Preventive Health Operating System
@@ -53,9 +55,9 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StatCard label="Technicians" value={techStats.total ?? 0} hint={`${techStats.totalSessions ?? 0} sessions`} />
-        <StatCard label="Health Schemas" value={healthSchemas.length} hint={`${measurementStats.total ?? 0} measurements`} />
-        <StatCard label="Competitions" value={compStats.total ?? 0} hint={`${compStats.totalParticipants ?? 0} participants`} accent />
+        <StatCard label="Competitions" value={compStats.total ?? 0} hint={`${compStats.totalParticipants ?? 0} participants`} />
+        <StatCard label="Missions" value={missionStats.total ?? 0} hint={`${missionStats.active ?? 0} active`} accent />
+        <StatCard label="Completed" value={missionStats.completed ?? 0} />
         <StatCard label="Audit Events" value={totalAudit} hint="hash-chained, immutable" />
       </div>
 
@@ -67,8 +69,9 @@ export function OverviewSection({ data }: { data: PlatformSnapshot }) {
             <LayerRow icon={<Layers className="h-4 w-4" />} name="Program Operating System" desc="16 subsystems: manifests, capabilities, lifecycle, sandbox, quotas, storage, events, certification, SDK, testing, dependencies, marketplace, observability, developer, execution" version="v3.0.0-m3" />
             <LayerRow icon={<HeartPulse className="h-4 w-4" />} name="Universal Health Data Platform" desc="17 subsystems: schemas, units, sources, measurements, evidence, verification, provenance, timeline, composite, derived, validation, profiles, search, interop, versioning, analytics" version="v4.0.0-m4" />
             <LayerRow icon={<Stethoscope className="h-4 w-4" />} name="Technician Network" desc="14 subsystems: profiles, certifications, accreditation, eligibility, sessions, appointments, discovery, reputation, disputes, devices, chain-of-custody, fraud, payments" version="v5.0.0-m5" />
-            <LayerRow icon={<Trophy className="h-4 w-4" />} name="Competition Platform" desc="12 subsystems: competitions, seasons, divisions, scoring, leaderboards, ranking, qualification, rewards, prize-pools, anti-cheating, analytics" version="v6.0.0-m6" active />
-            <LayerRow icon={<Zap className="h-4 w-4" />} name="Missions &amp; AI Coaching" desc="Future milestone — personalized daily plans and AI health coaching" version="reserved" />
+            <LayerRow icon={<Trophy className="h-4 w-4" />} name="Competition Platform" desc="12 subsystems: competitions, seasons, divisions, scoring, leaderboards, ranking, qualification, rewards, prize-pools, anti-cheating, analytics" version="v6.0.0-m6" />
+            <LayerRow icon={<Target className="h-4 w-4" />} name="Mission Engine &amp; AI Runtime" desc="15 subsystems: missions, goals, habits, plans, personalization, knowledge, explainability, notifications + AI core, runtime, safety, agents, workflows, observability" version="v7.0.0-m7" active />
+            <LayerRow icon={<Zap className="h-4 w-4" />} name="Marketplace &amp; Monetization" desc="Future milestone — program distribution and commercial viability" version="reserved" />
           </div>
         </Panel>
 

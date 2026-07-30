@@ -32,6 +32,8 @@ import { TechSessionsSection } from "@/components/console/sections/tech-sessions
 import { CompetitionsSection } from "@/components/console/sections/competitions";
 import { LeaderboardsSection } from "@/components/console/sections/leaderboards";
 import { PrizePoolsSection } from "@/components/console/sections/prize-pools";
+import { MissionsSection } from "@/components/console/sections/missions";
+import { AISection } from "@/components/console/sections/ai-runtime";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -62,7 +64,9 @@ export type ConsoleSection =
   | "reputation"
   | "competitions"
   | "leaderboards"
-  | "prize-pools";
+  | "prize-pools"
+  | "missions"
+  | "ai-runtime";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -171,6 +175,10 @@ function SectionRouter({
       return <LeaderboardsSection data={data} />;
     case "prize-pools":
       return <PrizePoolsSection data={data} />;
+    case "missions":
+      return <MissionsSection data={data} />;
+    case "ai-runtime":
+      return <AISection data={data} />;
   }
 
   function onSelectProgramBack() {

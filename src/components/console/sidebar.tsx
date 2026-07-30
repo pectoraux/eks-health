@@ -28,6 +28,8 @@ import {
   Trophy,
   BarChart3,
   Coins,
+  Target,
+  Bot,
   Moon,
   Sun,
 } from "lucide-react";
@@ -70,6 +72,8 @@ const NAV: NavItem[] = [
   { id: "competitions", label: "Competitions", icon: Trophy, group: "Competitions" },
   { id: "leaderboards", label: "Leaderboards", icon: BarChart3, group: "Competitions" },
   { id: "prize-pools", label: "Prize Pools", icon: Coins, group: "Competitions" },
+  { id: "missions", label: "Missions & Habits", icon: Target, group: "Missions & AI" },
+  { id: "ai-runtime", label: "AI Runtime", icon: Bot, group: "Missions & AI" },
 ];
 
 export function Sidebar({
