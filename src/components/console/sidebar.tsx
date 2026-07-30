@@ -31,6 +31,7 @@ import {
   Target,
   Bot,
   Terminal,
+  FlaskConical,
   Moon,
   Sun,
 } from "lucide-react";
@@ -77,6 +78,7 @@ const NAV: NavItem[] = [
   { id: "ai-runtime", label: "AI Runtime", icon: Bot, group: "Missions & AI" },
   { id: "developer", label: "Developer Platform", icon: Terminal, group: "Developer" },
   { id: "marketplace-console", label: "Health Marketplace", icon: Store, group: "Marketplace" },
+  { id: "research", label: "Research & Intelligence", icon: FlaskConical, group: "Marketplace" },
 ];
 
 export function Sidebar({

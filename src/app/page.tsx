@@ -36,6 +36,7 @@ import { MissionsSection } from "@/components/console/sections/missions";
 import { AISection } from "@/components/console/sections/ai-runtime";
 import { DeveloperSection } from "@/components/console/sections/developer";
 import { MarketplaceSection } from "@/components/console/sections/marketplace-console";
+import { ResearchSection } from "@/components/console/sections/research-console";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -70,7 +71,8 @@ export type ConsoleSection =
   | "missions"
   | "ai-runtime"
   | "developer"
-  | "marketplace-console";
+  | "marketplace-console"
+  | "research";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -187,6 +189,8 @@ function SectionRouter({
       return <DeveloperSection data={data} />;
     case "marketplace-console":
       return <MarketplaceSection data={data} />;
+    case "research":
+      return <ResearchSection data={data} />;
   }
 
   function onSelectProgramBack() {
