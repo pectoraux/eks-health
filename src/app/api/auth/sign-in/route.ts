@@ -7,8 +7,8 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   ensurePlatform();
-  ensureAdminAccount();
-  ensureDemoAccounts();
+  await ensureAdminAccount();
+  await ensureDemoAccounts();
 
   const body = await req.json() as { email?: string; password?: string };
   if (!body.email || !body.password) {

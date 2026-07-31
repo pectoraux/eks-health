@@ -105,10 +105,12 @@ export async function clearSessionCookies(): Promise<void> {
   cookieStore.delete(SESSION_COOKIE);
 }
 
-/** Ensure the permanent admin account exists. */
-export function ensureAdminAccount(): void {
+/** Hydrate accounts from DB, then ensure the permanent admin account exists. */
+export async function ensureAdminAccount(): Promise<void> {
   ensurePlatform();
   const accounts = getAccounts();
+  await accounts.hydrateFromDb();
+  await getSessions().hydrateFromDb();
   const adminEmail = "ekontetevi@gmail.com";
   const adminPassword = process.env.ADMIN_PASSWORD ?? "Payswap123456";
 
@@ -138,10 +140,12 @@ export function ensureAdminAccount(): void {
   }
 }
 
-/** Ensure demo accounts exist. */
-export function ensureDemoAccounts(): void {
+/** Hydrate accounts from DB, then ensure demo accounts exist. */
+export async function ensureDemoAccounts(): Promise<void> {
   ensurePlatform();
   const accounts = getAccounts();
+  await accounts.hydrateFromDb();
+  await getSessions().hydrateFromDb();
   const demoAccounts = [
     { email: "ama@eks.health", name: "Ama Serwaa", persona: "participant" as const },
     { email: "clinic@eks.health", name: "Dr. Adwoa Boateng", persona: "health_technician" as const },

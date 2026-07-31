@@ -80,17 +80,14 @@ model EksWaitlistEntry {
 
 model EksMeasurement {
   id               String   @id
-  accountId        String
+  profileId        String
   schemaId         String
-  valueJson        String   // JSON-encoded value (number | {systolic,diastolic} | etc.)
-  unitSymbol       String
-  sourceLabel      String
-  sourceId         String?
-  verificationState String  @default("unverified") // unverified | verified | disputed
+  dataJson         String   // full Measurement object as JSON snapshot
+  verificationState String  @default("unverified")
   collectedAt      DateTime
   createdAt        DateTime @default(now())
 
-  @@index([accountId])
+  @@index([profileId])
   @@index([schemaId])
   @@index([collectedAt])
 }

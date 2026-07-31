@@ -6,8 +6,8 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   ensurePlatform();
-  ensureAdminAccount();
-  ensureDemoAccounts();
+  await ensureAdminAccount();
+  await ensureDemoAccounts();
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ ok: true, data: null });

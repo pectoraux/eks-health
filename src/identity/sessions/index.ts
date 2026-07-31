@@ -22,6 +22,7 @@ import {
 } from "../core";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
 import type { Device } from "../devices";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Session
@@ -140,6 +141,7 @@ export class SessionManager {
     this.sessions.set(session.id, session);
     this.accessTokenIndex.set(session.accessToken, session.id);
     this.refreshTokenIndex.set(session.refreshToken, session.id);
+    void this._persist(session.id);
     const list = this.byAccount.get(ctx.accountId) ?? [];
     // Enforce max concurrent sessions: revoke oldest beyond limit
     const active = list.map((id) => this.sessions.get(id)!).filter((s) => s && s.state === "active");
@@ -182,6 +184,7 @@ export class SessionManager {
     }
     // Bump last-active
     this.sessions.set(id, { ...session, lastActiveAt: getClock().iso() });
+    void this._persist(id);
     // Risk-based re-auth
     if (session.riskScore >= policy.reauthThresholdRisk) {
       this.markState(id, "reauth_required");
@@ -219,6 +222,7 @@ export class SessionManager {
     this.accessTokenIndex.delete(session.accessToken);
     this.accessTokenIndex.set(newAccess, id);
     this.refreshTokenIndex.set(newRefresh, id);
+    void this._persist(id);
     void getEventBus().publish(buildEvent(IDENTITY_EVENTS.sessionRefreshed, { sessionId: id, accountId: session.accountId }, {}, "domain"));
     return updated;
   }
@@ -279,6 +283,7 @@ export class SessionManager {
     if (!session) throw new IdentityError({ code: "eks.identity.session.not_found", category: "session_expired", message: "Session gone." });
     const updated = { ...session, persona };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -286,6 +291,7 @@ export class SessionManager {
     const s = this.sessions.get(id);
     if (!s) return;
     this.sessions.set(id, { ...s, state });
+    void this._persist(id);
   }
 
   /** Sweep expired sessions (called by the scheduler). */
@@ -309,6 +315,97 @@ export class SessionManager {
       else if (s.state === "expired") expired++;
     }
     return { total: this.sessions.size, active, revoked, expired };
+  }
+
+  /**
+   * Write-behind persistence: upsert the current in-memory session to the
+   * EksSession table. Fire-and-forget; the in-memory store remains the
+   * source of truth for the running process.
+   */
+  private async _persist(id: SessionId): Promise<void> {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    try {
+      await db.eksSession.upsert({
+        where: { id },
+        create: {
+          id: s.id,
+          accountId: s.accountId,
+          persona: s.persona,
+          accessToken: s.accessToken,
+          refreshToken: s.refreshToken,
+          createdAt: new Date(s.createdAt),
+          expiresAt: new Date(s.expiresAt),
+          refreshExpiresAt: new Date(s.refreshExpiresAt),
+          absoluteExpiresAt: new Date(s.absoluteExpiresAt),
+          lastActiveAt: new Date(s.lastActiveAt),
+          state: s.state,
+          ipAddress: s.ipAddress ?? null,
+          userAgent: s.userAgent ?? null,
+          riskScore: s.riskScore,
+          mfaVerified: s.mfaVerified,
+        },
+        update: {
+          persona: s.persona,
+          accessToken: s.accessToken,
+          refreshToken: s.refreshToken,
+          expiresAt: new Date(s.expiresAt),
+          lastActiveAt: new Date(s.lastActiveAt),
+          state: s.state,
+          riskScore: s.riskScore,
+          mfaVerified: s.mfaVerified,
+        },
+      });
+    } catch (err) {
+      console.error("[sessions] DB write-behind failed for", s.id, err);
+    }
+  }
+
+  /**
+   * Hydrate the in-memory store from the EksSession table. Loads only
+   * active sessions whose absolute expiry hasn't passed. Called once on
+   * boot so users stay signed in across server restarts.
+   */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksSession.findMany();
+      const now = Date.now();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.sessions.has(row.id)) continue;
+        if (row.state !== "active") continue;
+        if (now > row.absoluteExpiresAt.getTime()) continue;
+        const session: Session = {
+          id: asSessionId(row.id),
+          accountId: row.accountId as AccountId,
+          persona: row.persona as Persona,
+          accessToken: row.accessToken,
+          refreshToken: row.refreshToken,
+          createdAt: row.createdAt.toISOString(),
+          expiresAt: row.expiresAt.toISOString(),
+          refreshExpiresAt: row.refreshExpiresAt.toISOString(),
+          absoluteExpiresAt: row.absoluteExpiresAt.toISOString(),
+          lastActiveAt: row.lastActiveAt.toISOString(),
+          state: row.state as SessionState,
+          ipAddress: row.ipAddress ?? undefined,
+          userAgent: row.userAgent ?? undefined,
+          riskScore: row.riskScore,
+          orgId: undefined,
+          mfaVerified: row.mfaVerified,
+        };
+        this.sessions.set(session.id, session);
+        this.accessTokenIndex.set(session.accessToken, session.id);
+        this.refreshTokenIndex.set(session.refreshToken, session.id);
+        const list = this.byAccount.get(session.accountId) ?? [];
+        list.push(session.id);
+        this.byAccount.set(session.accountId, list);
+        loaded++;
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[sessions] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

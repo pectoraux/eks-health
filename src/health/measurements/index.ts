@@ -25,6 +25,7 @@ import { HEALTH_EVENTS } from "../core";
 import type { MeasurementSchema } from "../schemas";
 import { getSchemas } from "../schemas";
 import { getSources } from "../sources";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Measurement
@@ -157,6 +158,7 @@ export class MeasurementStore {
     this.byProfile.set(input.profileId, [...pList, measurement.id]);
     const sList = this.bySchema.get(input.schemaId) ?? [];
     this.bySchema.set(input.schemaId, [...sList, measurement.id]);
+    void this._persist(measurement.id);
     void getEventBus().publish(buildEvent(HEALTH_EVENTS.measurementCreated, { measurementId: measurement.id, schemaId: input.schemaId, profileId: input.profileId }, {}, "domain"));
     return measurement;
   }
@@ -358,6 +360,64 @@ export class MeasurementStore {
       default:
         // structured, vector, range, timeseries — accept objects/arrays
         break;
+    }
+  }
+
+  /**
+   * Write-behind persistence: upsert the measurement as a JSON snapshot to
+   * the EksMeasurement table. Fire-and-forget.
+   */
+  private async _persist(id: MeasurementId): Promise<void> {
+    const m = this.measurements.get(id);
+    if (!m) return;
+    try {
+      await db.eksMeasurement.upsert({
+        where: { id },
+        create: {
+          id: m.id,
+          profileId: m.profileId,
+          schemaId: m.schemaId,
+          dataJson: JSON.stringify(m),
+          verificationState: m.verificationState,
+          collectedAt: new Date(m.provenance.collectedAt),
+        },
+        update: {
+          dataJson: JSON.stringify(m),
+          verificationState: m.verificationState,
+        },
+      });
+    } catch (err) {
+      console.error("[measurements] DB write-behind failed for", m.id, err);
+    }
+  }
+
+  /**
+   * Hydrate the in-memory store from the EksMeasurement table. Reconstructs
+   * full Measurement objects from the JSON snapshot, rebuilding byProfile
+   * and bySchema indexes. Called once on boot.
+   */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksMeasurement.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.measurements.has(row.id as MeasurementId)) continue;
+        try {
+          const m = JSON.parse(row.dataJson) as Measurement;
+          this.measurements.set(m.id, m);
+          const pList = this.byProfile.get(m.profileId) ?? [];
+          this.byProfile.set(m.profileId, [...pList, m.id]);
+          const sList = this.bySchema.get(m.schemaId) ?? [];
+          this.bySchema.set(m.schemaId, [...sList, m.id]);
+          loaded++;
+        } catch {
+          // skip malformed rows
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[measurements] DB hydration failed:", err);
+      return 0;
     }
   }
 }

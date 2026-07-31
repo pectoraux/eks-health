@@ -23,6 +23,7 @@ import {
   ALL_PERSONAS,
 } from "../core";
 import { getEventBus, buildEvent, getClock, generateId } from "@/kernel";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Account
@@ -235,6 +236,7 @@ export class AccountManager {
     };
     this.accounts.set(account.id, account);
     this.byEmail.set(email, account.id);
+    void this._persist(account.id);
 
     // Issue email verification token
     this.issueVerificationToken(account.id, email, "email");
@@ -445,6 +447,93 @@ export class AccountManager {
     const existing = this.accounts.get(id);
     if (!existing) return;
     this.accounts.set(id, { ...existing, ...updates as Account, updatedAt: getClock().iso() });
+    void this._persist(id);
+  }
+
+  /**
+   * Write-behind persistence: upsert the current in-memory account to the
+   * EksAccount table. Fire-and-forget — the in-memory store remains the
+   * source of truth for the running process; the DB row is a snapshot for
+   * restart recovery. Errors are swallowed (logged to console) so a DB
+   * hiccup never breaks the in-memory flow.
+   */
+  private async _persist(id: AccountId): Promise<void> {
+    const account = this.accounts.get(id);
+    if (!account) return;
+    try {
+      await db.eksAccount.upsert({
+        where: { id },
+        create: {
+          id: account.id,
+          email: account.email,
+          displayName: account.displayName,
+          state: account.state,
+          personas: account.personas.join(","),
+          activePersona: account.activePersona,
+          passwordHash: account.passwordHash ?? null,
+          passwordSalt: account.passwordSalt ?? null,
+          mfaEnabled: account.mfaEnabled,
+          isDemo: account.email.endsWith("@eks.health"),
+          isAdmin: account.email === "ekontetevi@gmail.com",
+          locale: account.locale ?? null,
+          timezone: account.timezone ?? null,
+        },
+        update: {
+          displayName: account.displayName,
+          state: account.state,
+          personas: account.personas.join(","),
+          activePersona: account.activePersona,
+          passwordHash: account.passwordHash ?? null,
+          passwordSalt: account.passwordSalt ?? null,
+          mfaEnabled: account.mfaEnabled,
+          locale: account.locale ?? null,
+          timezone: account.timezone ?? null,
+        },
+      });
+    } catch (err) {
+      console.error("[accounts] DB write-behind failed for", account.id, err);
+    }
+  }
+
+  /**
+   * Hydrate the in-memory store from the EksAccount table. Called once on
+   * platform boot before demo/admin seeding, so that accounts created in a
+   * previous server lifetime survive restart. Rows that already exist
+   * in-memory (e.g. just-seeded) are skipped.
+   */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksAccount.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.accounts.has(row.id)) continue;
+        const account: Account = {
+          id: asAccountId(row.id),
+          email: row.email,
+          displayName: row.displayName,
+          state: row.state as AccountState,
+          personas: row.personas ? (row.personas.split(",").filter(Boolean) as Persona[]) : ["participant"],
+          activePersona: (row.activePersona || "participant") as Persona,
+          contacts: [{ type: "email", value: row.email, verified: row.state === "active", primary: true }],
+          passwordHash: row.passwordHash ?? undefined,
+          passwordSalt: row.passwordSalt ?? undefined,
+          mfaEnabled: row.mfaEnabled,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.createdAt.toISOString(),
+          lastSignInAt: row.lastSignInAt ? row.lastSignInAt.toISOString() : undefined,
+          failedSignInAttempts: 0,
+          locale: row.locale ?? undefined,
+          timezone: row.timezone ?? undefined,
+        };
+        this.accounts.set(account.id, account);
+        this.byEmail.set(account.email, account.id);
+        loaded++;
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[accounts] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

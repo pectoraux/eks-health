@@ -1968,3 +1968,52 @@ Stage Summary:
 - Auth flow (sign-in -> dashboard -> session) works end-to-end via cookie-based sessions.
 - Honest copy confirmed live in production HTML.
 - Remaining in-memory: accounts/sessions (demo+admin seeded on boot), health measurements, missions/goals/habits, and all other 18 modules. These are the next persistence candidates.
+
+---
+Task ID: prod-2
+Agent: main (claude)
+Task: Migrate accounts + sessions from in-memory to DB-backed persistence (write-behind + hydration).
+
+Work Log:
+- Added `db` import to src/identity/accounts/index.ts.
+- Added `_persist(id)` private async method to AccountManager: fire-and-forget upsert to EksAccount table. Called from register() and update() (the single mutation point).
+- Added `hydrateFromDb()` async method to AccountManager: loads all EksAccount rows into the in-memory Map (skipping already-present ids), reconstructs the byEmail index. Called before demo/admin seeding.
+- Made ensureAdminAccount() and ensureDemoAccounts() async; both now `await accounts.hydrateFromDb()` first. Updated call sites in api/auth/sign-in/route.ts and api/auth/session/route.ts to await them.
+- VERIFIED (single-session, DB reset + restart):
+  * First sign-in as ama@eks.health -> 6 accounts persisted to EksAccount table (ama, clinic, kwame, research, admin, ekontetevi).
+  * Killed server, restarted. Sign-in as ama again -> SAME accountId (acc_0ms8y5pxdhg5ydhbjh79zhg1c), DB still 6 rows (no duplicates). Hydration worked, seeding skipped.
+  * Admin sign-in (ekontetevi@gmail.com) -> 200, dashboard returns platform accounts list.
+- Added `db` import to src/identity/sessions/index.ts.
+- Added `_persist(id)` to SessionManager: fire-and-forget upsert to EksSession. Hooked into create(), validate() (lastActiveAt bump), refresh(), switchPersona(), markState().
+- Added `hydrateFromDb()` to SessionManager: loads active sessions whose absolute expiry hasn't passed, rebuilds accessTokenIndex/refreshTokenIndex/byAccount.
+- Hooked `await getSessions().hydrateFromDb()` into ensureAdminAccount + ensureDemoAccounts.
+- VERIFIED (single-session, DB reset + restart):
+  * Sign-in as ama -> 1 session row persisted to EksSession (ses_0ms8y8neesepzveb, active, participant).
+  * Dashboard 200 with cookie.
+  * Killed server, restarted. Used the SAME access-token cookie -> /api/auth/session 200, /api/dashboard 200. Session survived restart via DB hydration.
+- Lint clean throughout.
+
+Stage Summary:
+- Accounts: DB-backed (write-behind + hydration). Survive restart, no duplicates.
+- Sessions: DB-backed (write-behind + hydration). Users stay logged in across server restarts.
+- Both use the same pattern: in-memory store is source of truth for the running process; DB row is a snapshot for restart recovery. Write-behind is fire-and-forget with caught errors so a DB hiccup never breaks the in-memory flow.
+- Remaining in-memory: health measurements, missions/goals/habits, and 16 other modules.
+
+---
+Task ID: prod-3
+Agent: main (claude)
+Task: Migrate health measurements to DB-backed write-behind persistence.
+
+Work Log:
+- Updated prisma/schema.prisma EksMeasurement model: simplified to use a `dataJson` column (full Measurement object as JSON snapshot) + indexed profileId/schemaId/collectedAt/verificationState columns. Pushed schema.
+- Added `db` import to src/health/measurements/index.ts.
+- Added `_persist(id)` private async method to MeasurementStore: fire-and-forget upsert to EksMeasurement, storing JSON.stringify(measurement) in dataJson. Hooked into record() (the only creation mutation point).
+- Added `hydrateFromDb()` async method to MeasurementStore: loads all EksMeasurement rows, JSON.parses the dataJson, rebuilds byProfile/bySchema indexes.
+- VERIFIED write-behind: after sign-in + dashboard access, 9 demo measurements persisted to EksMeasurement table (confirmed via direct Prisma read).
+- Lint clean.
+- HONEST LIMITATION: hydrateFromDb() is implemented but NOT yet wired into the boot sequence. Wiring it requires refactoring ensurePlatform() to be async (to hydrate before seedHealthDemoData, which would otherwise create duplicate demo measurements on restart). The write-behind is active (measurements save to DB); enabling hydration is a one-line call once the boot is refactored to async. Documented as next step.
+
+Stage Summary:
+- Measurement write-behind: SHIPPED + verified (9 rows persisted).
+- Measurement hydration: IMPLEMENTED, pending async-boot refactor to enable safely.
+- Remaining in-memory (no persistence yet): missions, goals, habits, and 16 other modules.
