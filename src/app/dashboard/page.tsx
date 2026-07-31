@@ -106,6 +106,9 @@ export default function DashboardPage() {
             {session.isDemo && <Badge className="text-[10px] bg-amber-500/20 text-amber-600">DEMO</Badge>}
           </div>
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => router.push("/marketplace")} className="text-xs">Marketplace</Button>
+            <Button variant="ghost" size="sm" onClick={() => router.push("/dashboard/timeline")} className="text-xs">Timeline</Button>
+            <Button variant="ghost" size="sm" onClick={() => router.push("/dashboard/settings")} className="text-xs">Settings</Button>
             <Button variant="ghost" size="sm" onClick={() => router.push("/console")} className="text-xs">Console</Button>
             <Button variant="ghost" size="sm" onClick={signOut}><LogOut className="h-3.5 w-3.5" /></Button>
           </div>

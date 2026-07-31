@@ -36,6 +36,7 @@ export default function LandingPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <Button variant="ghost" size="sm" onClick={() => router.push("/marketplace")} className="hidden sm:flex">Browse Programs</Button>
             <Button variant="ghost" size="sm" onClick={() => router.push("/sign-in")} className="hidden sm:flex">Sign In</Button>
             <Button size="sm" onClick={() => router.push("/sign-up")} className="bg-[var(--brand)] text-[var(--brand-foreground)] hover:opacity-90">
               Get Started <ArrowRight className="h-3.5 w-3.5 ml-1.5" />
