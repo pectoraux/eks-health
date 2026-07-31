@@ -1,0 +1,717 @@
+     1→/**
+     2→ * Eks-Health Research Platform — Population Intelligence Engine
+     3→ *
+     4→ * Continuously aggregates outcomes across the entire platform: improvement
+     5→ * trends by category, completion rates, measurement frequency, program
+     6→ * effectiveness, regional differences, seasonal effects, demographic
+     7→ * trends, retention, competition participation, and mission adherence.
+     8→ *
+     9→ * Only aggregate, privacy-preserving information is ever exposed. Small
+    10→ * groups are suppressed via the privacy engine. All cross-subsystem calls
+    11→ * are guarded with try/catch so a missing subsystem degrades gracefully.
+    12→ */
+    13→
+    14→import "server-only";
+    15→import {
+    16→  type PopulationSnapshotId,
+    17→  type PopulationSnapshot,
+    18→  type ProgramId,
+    19→  asPopulationSnapshotId,
+    20→} from "../core";
+    21→import { getPrivacy } from "../privacy";
+    22→import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
+    23→import { RESEARCH_EVENTS } from "../core";
+    24→
+    25→// ---------------------------------------------------------------------------
+    26→// Defensive loaders
+    27→// ---------------------------------------------------------------------------
+    28→
+    29→interface HealthProfileLike {
+    30→  readonly id: string;
+    31→  readonly accountId: string;
+    32→  readonly demographics: {
+    33→    ageRange?: string;
+    34→    biologicalSex?: "male" | "female" | "intersex" | "unspecified";
+    35→    country?: string;
+    36→    region?: string;
+    37→  };
+    38→  readonly programs: { programId: string; status: "active" | "paused" | "uninstalled"; installedAt: string }[];
+    39→}
+    40→
+    41→interface MeasurementLike {
+    42→  readonly id: string;
+    43→  readonly profileId: string;
+    44→  readonly schemaId: string;
+    45→  readonly value: number | { value?: number };
+    46→  readonly verificationState: string;
+    47→  readonly provenance: { collectedAt: string };
+    48→  readonly supersededBy?: string;
+    49→}
+    50→
+    51→interface MeasurementsApi {
+    52→  list(filter?: { includeSuperseded?: boolean }): MeasurementLike[];
+    53→  getStats(profileId?: string): {
+    54→    total: number;
+    55→    bySchema: Record<string, number>;
+    56→    byVerification: Record<string, number>;
+    57→  };
+    58→}
+    59→
+    60→interface MissionsApi {
+    61→  list(filter?: { state?: string }): {
+    62→    state: string;
+    63→    category: string;
+    64→    programId: string;
+    65→    participantId: string;
+    66→    result?: { outcome: string };
+    67→    scheduledFor: string;
+    68→  }[];
+    69→}
+    70→
+    71→interface CompetitionsApi {
+    72→  list(): { id: string; programId: string; currentParticipants: number; state: string }[];
+    73→}
+    74→
+    75→interface EvidenceApi {
+    76→  get(programId: ProgramId): { confidenceScore: number; totalParticipants: number; averageImprovement: number; evidenceLevel: string } | undefined;
+    77→  accumulate(programId: ProgramId): Promise<unknown>;
+    78→}
+    79→
+    80→let _profilesCache: { list(): HealthProfileLike[] } | null | undefined;
+    81→async function loadProfiles(): Promise<{ list(): HealthProfileLike[] } | null> {
+    82→  if (_profilesCache !== undefined) return _profilesCache;
+    83→  try {
+    84→    const mod = await import("@/health");
+    85→    const getter = (mod as { getProfiles?: () => { list(): HealthProfileLike[] } }).getProfiles;
+    86→    _profilesCache = getter ? getter() : null;
+    87→  } catch {
+    88→    _profilesCache = null;
+    89→  }
+    90→  return _profilesCache;
+    91→}
+    92→
+    93→let _measurementsCache: MeasurementsApi | null | undefined;
+    94→async function loadMeasurements(): Promise<MeasurementsApi | null> {
+    95→  if (_measurementsCache !== undefined) return _measurementsCache;
+    96→  try {
+    97→    const mod = await import("@/health");
+    98→    const getter = (mod as { getMeasurements?: () => MeasurementsApi }).getMeasurements;
+    99→    _measurementsCache = getter ? getter() : null;
+   100→  } catch {
+   101→    _measurementsCache = null;
+   102→  }
+   103→  return _measurementsCache;
+   104→}
+   105→
+   106→let _missionsCache: MissionsApi | null | undefined;
+   107→async function loadMissions(): Promise<MissionsApi | null> {
+   108→  if (_missionsCache !== undefined) return _missionsCache;
+   109→  try {
+   110→    const mod = await import("@/missions");
+   111→    const getter = (mod as { getMissions?: () => MissionsApi }).getMissions;
+   112→    _missionsCache = getter ? getter() : null;
+   113→  } catch {
+   114→    _missionsCache = null;
+   115→  }
+   116→  return _missionsCache;
+   117→}
+   118→
+   119→let _competitionsCache: CompetitionsApi | null | undefined;
+   120→async function loadCompetitions(): Promise<CompetitionsApi | null> {
+   121→  if (_competitionsCache !== undefined) return _competitionsCache;
+   122→  try {
+   123→    const mod = await import("@/competitions");
+   124→    const getter = (mod as { getCompetitions?: () => CompetitionsApi }).getCompetitions;
+   125→    _competitionsCache = getter ? getter() : null;
+   126→  } catch {
+   127→    _competitionsCache = null;
+   128→  }
+   129→  return _competitionsCache;
+   130→}
+   131→
+   132→let _evidenceCache: EvidenceApi | null | undefined;
+   133→async function loadEvidence(): Promise<EvidenceApi | null> {
+   134→  if (_evidenceCache !== undefined) return _evidenceCache;
+   135→  try {
+   136→    const mod = await import("../evidence");
+   137→    const getter = (mod as { getEvidenceEngine?: () => EvidenceApi }).getEvidenceEngine;
+   138→    _evidenceCache = getter ? getter() : null;
+   139→  } catch {
+   140→    _evidenceCache = null;
+   141→  }
+   142→  return _evidenceCache;
+   143→}
+   144→
+   145→// ---------------------------------------------------------------------------
+   146→// Trend / period helpers
+   147→// ---------------------------------------------------------------------------
+   148→
+   149→export type TrendMetric = "totalParticipants" | "totalMeasurements" | "totalPrograms" | "totalCompetitions";
+   150→
+   151→export interface TrendPoint {
+   152→  readonly at: string;
+   153→  readonly value: number;
+   154→}
+   155→
+   156→export interface MetricTrend {
+   157→  readonly metric: string;
+   158→  readonly period: string;
+   159→  readonly points: TrendPoint[];
+   160→  readonly direction: "up" | "down" | "stable";
+   161→  readonly changePercent: number;
+   162→}
+   163→
+   164→// ---------------------------------------------------------------------------
+   165→// Engine
+   166→// ---------------------------------------------------------------------------
+   167→
+   168→export class PopulationIntelligenceEngine {
+   169→  private readonly snapshots: PopulationSnapshot[] = [];
+   170→  private readonly byId = new Map<PopulationSnapshotId, PopulationSnapshot>();
+   171→
+   172→  /**
+   173→   * Capture a PopulationSnapshot from real platform data. Computes every
+   174→   * category of population intelligence in one pass and stores the snapshot
+   175→   * for trend analysis.
+   176→   */
+   177→  async capture(): Promise<PopulationSnapshot> {
+   178→    const now = getClock().iso();
+   179→    const profiles = await loadProfiles();
+   180→    const measurements = await loadMeasurements();
+   181→    const missions = await loadMissions();
+   182→    const competitions = await loadCompetitions();
+   183→    const evidence = await loadEvidence();
+   184→
+   185→    let profileList: HealthProfileLike[] = [];
+   186→    try {
+   187→      profileList = profiles?.list() ?? [];
+   188→    } catch {
+   189→      profileList = [];
+   190→    }
+   191→
+   192→    let measurementList: MeasurementLike[] = [];
+   193→    try {
+   194→      measurementList = measurements?.list({ includeSuperseded: false }) ?? [];
+   195→    } catch {
+   196→      measurementList = [];
+   197→    }
+   198→
+   199→    let missionList: ReturnType<NonNullable<MissionsApi>["list"]> = [];
+   200→    try {
+   201→      missionList = missions?.list() ?? [];
+   202→    } catch {
+   203→      missionList = [];
+   204→    }
+   205→
+   206→    let competitionList: ReturnType<NonNullable<CompetitionsApi>["list"]> = [];
+   207→    try {
+   208→      competitionList = competitions?.list() ?? [];
+   209→    } catch {
+   210→      competitionList = [];
+   211→    }
+   212→
+   213→    const totalParticipants = profileList.length;
+   214→    const totalMeasurements = measurementList.length;
+   215→    const totalVerifiedMeasurements = measurementList.filter((m) => m.verificationState === "verified").length;
+   216→
+   217→    // Unique active program IDs across all profiles
+   218→    const programIdSet = new Set<string>();
+   219→    for (const p of profileList) {
+   220→      for (const pp of p.programs) {
+   221→        if (pp.status === "active") programIdSet.add(pp.programId);
+   222→      }
+   223→    }
+   224→    const totalPrograms = programIdSet.size;
+   225→    const totalCompetitions = competitionList.length;
+   226→
+   227→    // Improvement trends per measurement schema (category)
+   228→    const improvementTrends = this.computeImprovementTrends(measurementList);
+   229→
+   230→    // Completion rates per mission category
+   231→    const completionRates = this.computeCompletionRates(missionList);
+   232→
+   233→    // Measurement frequency per category (avg per week per profile)
+   234→    const measurementFrequency = this.computeMeasurementFrequency(measurementList, profileList.length);
+   235→
+   236→    // Program effectiveness (from EvidenceEngine)
+   237→    const programEffectiveness = this.computeProgramEffectiveness(programIdSet, evidence);
+   238→
+   239→    // Regional differences (privacy suppressed)
+   240→    const regionalDifferences = this.computeRegionalDifferences(profileList, measurementList);
+   241→
+   242→    // Seasonal effects
+   243→    const seasonalEffects = this.computeSeasonalEffects(measurementList);
+   244→
+   245→    // Demographic trends (privacy suppressed)
+   246→    const demographicTrends = this.computeDemographicTrends(profileList);
+   247→
+   248→    // Retention metrics (30-day, 90-day proxies)
+   249→    const retentionMetrics = this.computeRetentionMetrics(profileList, measurementList);
+   250→
+   251→    // Competition participation (privacy suppressed)
+   252→    const competitionParticipation = this.computeCompetitionParticipation(competitionList);
+   253→
+   254→    // Mission adherence per category
+   255→    const missionAdherence = this.computeMissionAdherence(missionList);
+   256→
+   257→    const snapshot: PopulationSnapshot = {
+   258→      id: asPopulationSnapshotId(generateId("pop_")),
+   259→      totalParticipants,
+   260→      totalMeasurements,
+   261→      totalVerifiedMeasurements,
+   262→      totalPrograms,
+   263→      totalCompetitions,
+   264→      improvementTrends,
+   265→      completionRates,
+   266→      measurementFrequency,
+   267→      programEffectiveness,
+   268→      regionalDifferences,
+   269→      seasonalEffects,
+   270→      demographicTrends,
+   271→      retentionMetrics,
+   272→      competitionParticipation,
+   273→      missionAdherence,
+   274→      capturedAt: now,
+   275→    };
+   276→
+   277→    this.snapshots.push(snapshot);
+   278→    this.byId.set(snapshot.id, snapshot);
+   279→    // Keep last 200 snapshots to bound memory.
+   280→    if (this.snapshots.length > 200) {
+   281→      const evicted = this.snapshots.shift()!;
+   282→      this.byId.delete(evicted.id);
+   283→    }
+   284→
+   285→    void getEventBus().publish(
+   286→      buildEvent(
+   287→        RESEARCH_EVENTS.populationInsightGenerated,
+   288→        {
+   289→          snapshotId: snapshot.id,
+   290→          totalParticipants,
+   291→          totalMeasurements,
+   292→          totalPrograms,
+   293→          totalCompetitions,
+   294→        },
+   295→        {},
+   296→        "domain",
+   297→      ),
+   298→    );
+   299→    return snapshot;
+   300→  }
+   301→
+   302→  getLatest(): PopulationSnapshot | undefined {
+   303→    return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1] : undefined;
+   304→  }
+   305→
+   306→  getHistory(limit = 50): PopulationSnapshot[] {
+   307→    return this.snapshots.slice(-limit);
+   308→  }
+   309→
+   310→  getTrend(metric: TrendMetric, period = "30d"): MetricTrend {
+   311→    const cutoffMs = periodToMs(period);
+   312→    const now = Date.now();
+   313→    const points: TrendPoint[] = [];
+   314→    for (const s of this.snapshots) {
+   315→      const at = new Date(s.capturedAt).getTime();
+   316→      if (cutoffMs > 0 && now - at > cutoffMs) continue;
+   317→      const value = snapshotMetric(s, metric);
+   318→      points.push({ at: s.capturedAt, value });
+   319→    }
+   320→    const direction = computeDirection(points.map((p) => p.value));
+   321→    const changePercent = points.length >= 2 && points[0].value !== 0
+   322→      ? ((points[points.length - 1].value - points[0].value) / Math.abs(points[0].value)) * 100
+   323→      : 0;
+   324→    return { metric, period, points, direction, changePercent: round2(changePercent) };
+   325→  }
+   326→
+   327→  getRegionalComparison(): { region: string; participants: number; avgImprovement: number }[] {
+   328→    return this.getLatest()?.regionalDifferences ?? [];
+   329→  }
+   330→
+   331→  getSeasonalAnalysis(): { season: string; avgImprovement: number }[] {
+   332→    return this.getLatest()?.seasonalEffects ?? [];
+   333→  }
+   334→
+   335→  getStats(): {
+   336→    totalSnapshots: number;
+   337→    avgParticipants: number;
+   338→    avgImprovement: number;
+   339→    avgPrograms: number;
+   340→    avgCompetitions: number;
+   341→    lastCapturedAt?: string;
+   342→  } {
+   343→    const list = this.snapshots;
+   344→    if (list.length === 0) {
+   345→      return { totalSnapshots: 0, avgParticipants: 0, avgImprovement: 0, avgPrograms: 0, avgCompetitions: 0 };
+   346→    }
+   347→    let popSum = 0;
+   348→    let programSum = 0;
+   349→    let compSum = 0;
+   350→    let improvementSum = 0;
+   351→    let improvementCount = 0;
+   352→    for (const s of list) {
+   353→      popSum += s.totalParticipants;
+   354→      programSum += s.totalPrograms;
+   355→      compSum += s.totalCompetitions;
+   356→      for (const t of s.improvementTrends) {
+   357→        improvementSum += t.avgImprovement;
+   358→        improvementCount++;
+   359→      }
+   360→    }
+   361→    return {
+   362→      totalSnapshots: list.length,
+   363→      avgParticipants: popSum / list.length,
+   364→      avgImprovement: improvementCount > 0 ? improvementSum / improvementCount : 0,
+   365→      avgPrograms: programSum / list.length,
+   366→      avgCompetitions: compSum / list.length,
+   367→      lastCapturedAt: list[list.length - 1].capturedAt,
+   368→    };
+   369→  }
+   370→
+   371→  // -------------------------------------------------------------------------
+   372→  // Internal: real per-category computation
+   373→  // -------------------------------------------------------------------------
+   374→
+   375→  private computeImprovementTrends(measurements: MeasurementLike[]): PopulationSnapshot["improvementTrends"] {
+   376→    const bySchema = new Map<string, MeasurementLike[]>();
+   377→    for (const m of measurements) {
+   378→      const arr = bySchema.get(m.schemaId) ?? [];
+   379→      arr.push(m);
+   380→      bySchema.set(m.schemaId, arr);
+   381→    }
+   382→    const result: { category: string; avgImprovement: number; trend: "up" | "down" | "stable" }[] = [];
+   383→    for (const [schemaId, arr] of bySchema) {
+   384→      const improvements = computePerProfileImprovements(arr);
+   385→      if (improvements.length === 0) continue;
+   386→      const avg = improvements.reduce((a, b) => a + b, 0) / improvements.length;
+   387→      result.push({
+   388→        category: schemaId,
+   389→        avgImprovement: round2(avg),
+   390→        trend: avg > 1 ? "up" : avg < -1 ? "down" : "stable",
+   391→      });
+   392→    }
+   393→    return result.sort((a, b) => b.avgImprovement - a.avgImprovement);
+   394→  }
+   395→
+   396→  private computeCompletionRates(missions: { state: string; category: string }[]): PopulationSnapshot["completionRates"] {
+   397→    const byCategory = new Map<string, { attempted: number; completed: number }>();
+   398→    for (const m of missions) {
+   399→      const entry = byCategory.get(m.category) ?? { attempted: 0, completed: 0 };
+   400→      if (m.state === "completed" || m.state === "skipped" || m.state === "expired" || m.state === "cancelled") {
+   401→        entry.attempted++;
+   402→      }
+   403→      if (m.state === "completed") entry.completed++;
+   404→      byCategory.set(m.category, entry);
+   405→    }
+   406→    const result: { category: string; rate: number }[] = [];
+   407→    for (const [category, { attempted, completed }] of byCategory) {
+   408→      result.push({ category, rate: round4(attempted > 0 ? completed / attempted : 0) });
+   409→    }
+   410→    return result.sort((a, b) => b.rate - a.rate);
+   411→  }
+   412→
+   413→  private computeMeasurementFrequency(measurements: MeasurementLike[], participantCount: number): PopulationSnapshot["measurementFrequency"] {
+   414→    if (participantCount === 0) return [];
+   415→    const bySchema = new Map<string, number>();
+   416→    const now = Date.now();
+   417→    const weekMs = 7 * 86400000;
+   418→    const weekAgo = now - weekMs;
+   419→    for (const m of measurements) {
+   420→      const t = new Date(m.provenance.collectedAt).getTime();
+   421→      if (t >= weekAgo) {
+   422→        bySchema.set(m.schemaId, (bySchema.get(m.schemaId) ?? 0) + 1);
+   423→      }
+   424→    }
+   425→    const result: { category: string; avgPerWeek: number }[] = [];
+   426→    for (const [schemaId, count] of bySchema) {
+   427→      result.push({ category: schemaId, avgPerWeek: round2(count / participantCount) });
+   428→    }
+   429→    return result.sort((a, b) => b.avgPerWeek - a.avgPerWeek);
+   430→  }
+   431→
+   432→  private computeProgramEffectiveness(
+   433→    programIds: Set<string>,
+   434→    evidence: EvidenceApi | null,
+   435→  ): PopulationSnapshot["programEffectiveness"] {
+   436→    if (!evidence) return [];
+   437→    const result: { programId: ProgramId; effectiveness: number; confidence: number }[] = [];
+   438→    for (const pid of programIds) {
+   439→      try {
+   440→        const acc = evidence.get(pid as ProgramId);
+   441→        if (!acc) continue;
+   442→        // Effectiveness = weighted blend of improvement & retention
+   443→        const effectiveness = round2(
+   444→          clamp01((acc.averageImprovement ?? 0) / 50) * 0.5 + clamp01(acc.confidenceScore / 100) * 0.5,
+   445→        );
+   446→        result.push({
+   447→          programId: pid as ProgramId,
+   448→          effectiveness,
+   449→          confidence: round2(acc.confidenceScore),
+   450→        });
+   451→      } catch {
+   452→        /* skip */
+   453→      }
+   454→    }
+   455→    return result.sort((a, b) => b.effectiveness - a.effectiveness);
+   456→  }
+   457→
+   458→  private computeRegionalDifferences(
+   459→    profiles: HealthProfileLike[],
+   460→    measurements: MeasurementLike[],
+   461→  ): PopulationSnapshot["regionalDifferences"] {
+   462→    // Map profileId → country (via profile)
+   463→    const profileCountry = new Map<string, string>();
+   464→    for (const p of profiles) {
+   465→      if (p.demographics.country) profileCountry.set(p.id, p.demographics.country);
+   466→    }
+   467→    // Compute avg improvement per region (country)
+   468→    const byRegion = new Map<string, { participants: Set<string>; improvements: number[] }>();
+   469→    for (const m of measurements) {
+   470→      const country = profileCountry.get(m.profileId);
+   471→      if (!country) continue;
+   472→      const entry = byRegion.get(country) ?? { participants: new Set<string>(), improvements: [] };
+   473→      entry.participants.add(m.profileId);
+   474→      byRegion.set(country, entry);
+   475→    }
+   476→    // Compute per-profile improvements per region
+   477→    const measurementsByProfile = new Map<string, MeasurementLike[]>();
+   478→    for (const m of measurements) {
+   479→      const arr = measurementsByProfile.get(m.profileId) ?? [];
+   480→      arr.push(m);
+   481→      measurementsByProfile.set(m.profileId, arr);
+   482→    }
+   483→    for (const [country, entry] of byRegion) {
+   484→      for (const profileId of entry.participants) {
+   485→        const arr = measurementsByProfile.get(profileId) ?? [];
+   486→        const imps = computePerProfileImprovements(arr);
+   487→        entry.improvements.push(...imps);
+   488→      }
+   489→      byRegion.set(country, entry);
+   490→    }
+   491→    // Apply privacy suppression
+   492→    const privacy = getPrivacy();
+   493→    const raw = [...byRegion.entries()].map(([region, e]) => ({
+   494→      region,
+   495→      participants: e.participants.size,
+   496→      avgImprovement: round2(e.improvements.length > 0 ? e.improvements.reduce((a, b) => a + b, 0) / e.improvements.length : 0),
+   497→      count: e.participants.size,
+   498→    }));
+   499→    const suppressed = privacy.suppressSmallGroups(raw);
+   500→    return suppressed.map(({ region, participants, avgImprovement }) => ({ region, participants, avgImprovement }));
+   501→  }
+   502→
+   503→  private computeSeasonalEffects(measurements: MeasurementLike[]): PopulationSnapshot["seasonalEffects"] {
+   504→    const bySeason = new Map<string, number[]>();
+   505→    for (const m of measurements) {
+   506→      const season = monthToSeason(m.provenance.collectedAt);
+   507→      const arr = bySeason.get(season) ?? [];
+   508→      // Track per-measurement "improvement vs first" — proxy: just track
+   509→      // individual values' deltas to the global mean for that profile/schema.
+   510→      // For simplicity, we use the absolute value (raw measurement) change
+   511→      // approximation: we already computed per-profile improvements elsewhere.
+   512→      // Here we approximate seasonal effect by the avg of (last - first)
+   513→      // deltas per profile within that season.
+   514→      arr.push(measurementValue(m));
+   515→      bySeason.set(season, arr);
+   516→    }
+   517→    // Compute the average measurement value per season, then derive a
+   518→    // relative "improvement" proxy vs the overall mean.
+   519→    const seasonAvgs: { season: string; avg: number }[] = [];
+   520→    let allValues: number[] = [];
+   521→    for (const [, arr] of bySeason) allValues = allValues.concat(arr);
+   522→    const overall = allValues.length > 0 ? allValues.reduce((a, b) => a + b, 0) / allValues.length : 0;
+   523→    for (const [season, arr] of bySeason) {
+   524→      const avg = arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : 0;
+   525→      seasonAvgs.push({ season, avg });
+   526→    }
+   527→    return seasonAvgs.map(({ season, avg }) => ({
+   528→      season,
+   529→      avgImprovement: round2(overall !== 0 ? ((avg - overall) / Math.abs(overall)) * 100 : 0),
+   530→    })).sort((a, b) => b.avgImprovement - a.avgImprovement);
+   531→  }
+   532→
+   533→  private computeDemographicTrends(profiles: HealthProfileLike[]): PopulationSnapshot["demographicTrends"] {
+   534→    const byDemo = new Map<string, Set<string>>();
+   535→    for (const p of profiles) {
+   536→      const key = p.demographics.ageRange ?? "unknown";
+   537→      const entry = byDemo.get(key) ?? new Set<string>();
+   538→      entry.add(p.accountId);
+   539→      byDemo.set(key, entry);
+   540→    }
+   541→    const privacy = getPrivacy();
+   542→    const raw = [...byDemo.entries()].map(([demographic, set]) => ({
+   543→      demographic,
+   544→      participants: set.size,
+   545→      trend: "stable", // updated by comparison in getTrend; default stable
+   546→      count: set.size,
+   547→    }));
+   548→    const suppressed = privacy.suppressSmallGroups(raw);
+   549→    return suppressed.map(({ demographic, participants, trend }) => ({
+   550→      demographic,
+   551→      participants,
+   552→      trend: trend ?? "stable",
+   553→    }));
+   554→  }
+   555→
+   556→  private computeRetentionMetrics(
+   557→    profiles: HealthProfileLike[],
+   558→    measurements: MeasurementLike[],
+   559→  ): PopulationSnapshot["retentionMetrics"] {
+   560→    const now = Date.now();
+   561→    const day30 = now - 30 * 86400000;
+   562→    const day90 = now - 90 * 86400000;
+   563→    const activeProfiles30 = new Set<string>();
+   564→    const activeProfiles90 = new Set<string>();
+   565→    for (const m of measurements) {
+   566→      const t = new Date(m.provenance.collectedAt).getTime();
+   567→      if (t >= day30) activeProfiles30.add(m.profileId);
+   568→      if (t >= day90) activeProfiles90.add(m.profileId);
+   569→    }
+   570→    const total = profiles.length;
+   571→    return [
+   572→      { period: "30d", rate: round4(total > 0 ? activeProfiles30.size / total : 0) },
+   573→      { period: "90d", rate: round4(total > 0 ? activeProfiles90.size / total : 0) },
+   574→    ];
+   575→  }
+   576→
+   577→  private computeCompetitionParticipation(
+   578→    competitions: { id: string; currentParticipants: number }[],
+   579→  ): PopulationSnapshot["competitionParticipation"] {
+   580→    const privacy = getPrivacy();
+   581→    const raw = competitions.map((c) => ({
+   582→      competitionId: c.id,
+   583→      participants: c.currentParticipants,
+   584→      count: c.currentParticipants,
+   585→    }));
+   586→    const suppressed = privacy.suppressSmallGroups(raw);
+   587→    return suppressed.map(({ competitionId, participants }) => ({ competitionId, participants }));
+   588→  }
+   589→
+   590→  private computeMissionAdherence(missions: { state: string; category: string }[]): PopulationSnapshot["missionAdherence"] {
+   591→    const byCategory = new Map<string, { total: number; completed: number }>();
+   592→    for (const m of missions) {
+   593→      const entry = byCategory.get(m.category) ?? { total: 0, completed: 0 };
+   594→      entry.total++;
+   595→      if (m.state === "completed") entry.completed++;
+   596→      byCategory.set(m.category, entry);
+   597→    }
+   598→    const result: { category: string; adherenceRate: number }[] = [];
+   599→    for (const [category, { total, completed }] of byCategory) {
+   600→      result.push({ category, adherenceRate: round4(total > 0 ? completed / total : 0) });
+   601→    }
+   602→    return result.sort((a, b) => b.adherenceRate - a.adherenceRate);
+   603→  }
+   604→}
+   605→
+   606→// ---------------------------------------------------------------------------
+   607→// Helpers
+   608→// ---------------------------------------------------------------------------
+   609→
+   610→function measurementValue(m: MeasurementLike): number {
+   611→  if (typeof m.value === "number") return m.value;
+   612→  if (m.value && typeof m.value === "object" && typeof m.value.value === "number") return m.value.value;
+   613→  return NaN;
+   614→}
+   615→
+   616→function computePerProfileImprovements(arr: MeasurementLike[]): number[] {
+   617→  const byProfile = new Map<string, MeasurementLike[]>();
+   618→  for (const m of arr) {
+   619→    const list = byProfile.get(m.profileId) ?? [];
+   620→    list.push(m);
+   621→    byProfile.set(m.profileId, list);
+   622→  }
+   623→  const results: number[] = [];
+   624→  for (const [, list] of byProfile) {
+   625→    if (list.length < 2) continue;
+   626→    // Group by schema within profile
+   627→    const bySchema = new Map<string, MeasurementLike[]>();
+   628→    for (const m of list) {
+   629→      const s = bySchema.get(m.schemaId) ?? [];
+   630→      s.push(m);
+   631→      bySchema.set(m.schemaId, s);
+   632→    }
+   633→    const schemaPercents: number[] = [];
+   634→    for (const [, sArr] of bySchema) {
+   635→      if (sArr.length < 2) continue;
+   636→      const sorted = [...sArr].sort((a, b) => a.provenance.collectedAt.localeCompare(b.provenance.collectedAt));
+   637→      const first = measurementValue(sorted[0]);
+   638→      const last = measurementValue(sorted[sorted.length - 1]);
+   639→      if (first === 0 || !Number.isFinite(first) || !Number.isFinite(last)) continue;
+   640→      schemaPercents.push(((last - first) / Math.abs(first)) * 100);
+   641→    }
+   642→    if (schemaPercents.length > 0) {
+   643→      results.push(schemaPercents.reduce((a, b) => a + b, 0) / schemaPercents.length);
+   644→    }
+   645→  }
+   646→  return results;
+   647→}
+   648→
+   649→function monthToSeason(iso: string): string {
+   650→  const month = new Date(iso).getUTCMonth() + 1; // 1-12
+   651→  if (month === 12 || month === 1 || month === 2) return "winter";
+   652→  if (month >= 3 && month <= 5) return "spring";
+   653→  if (month >= 6 && month <= 8) return "summer";
+   654→  return "fall";
+   655→}
+   656→
+   657→function periodToMs(period: string): number {
+   658→  const match = period.match(/^(\d+)([dhmy])$/);
+   659→  if (!match) return 0;
+   660→  const n = parseInt(match[1], 10);
+   661→  const unit = match[2];
+   662→  switch (unit) {
+   663→    case "d": return n * 86400000;
+   664→    case "h": return n * 3600000;
+   665→    case "m": return n * 30 * 86400000;
+   666→    case "y": return n * 365 * 86400000;
+   667→    default: return 0;
+   668→  }
+   669→}
+   670→
+   671→function computeDirection(values: number[]): "up" | "down" | "stable" {
+   672→  if (values.length < 2) return "stable";
+   673→  const first = values[0];
+   674→  const last = values[values.length - 1];
+   675→  if (first === 0) return last > 0 ? "up" : "stable";
+   676→  const change = ((last - first) / Math.abs(first)) * 100;
+   677→  if (change > 1) return "up";
+   678→  if (change < -1) return "down";
+   679→  return "stable";
+   680→}
+   681→
+   682→function snapshotMetric(s: PopulationSnapshot, metric: TrendMetric): number {
+   683→  switch (metric) {
+   684→    case "totalParticipants": return s.totalParticipants;
+   685→    case "totalMeasurements": return s.totalMeasurements;
+   686→    case "totalPrograms": return s.totalPrograms;
+   687→    case "totalCompetitions": return s.totalCompetitions;
+   688→  }
+   689→}
+   690→
+   691→function clamp01(x: number): number {
+   692→  if (!Number.isFinite(x)) return 0;
+   693→  return Math.max(0, Math.min(1, x));
+   694→}
+   695→
+   696→function round2(x: number): number {
+   697→  if (!Number.isFinite(x)) return 0;
+   698→  return Math.round(x * 100) / 100;
+   699→}
+   700→
+   701→function round4(x: number): number {
+   702→  if (!Number.isFinite(x)) return 0;
+   703→  return Math.round(x * 10000) / 10000;
+   704→}
+   705→
+   706→// ---------------------------------------------------------------------------
+   707→// Singleton
+   708→// ---------------------------------------------------------------------------
+   709→
+   710→let _engine: PopulationIntelligenceEngine | null = null;
+   711→export function getPopulation(): PopulationIntelligenceEngine {
+   712→  if (!_engine) _engine = new PopulationIntelligenceEngine();
+   713→  return _engine;
+   714→}
+   715→
+   716→export { RESEARCH_EVENTS, getPrivacy };
+   717→

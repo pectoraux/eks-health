@@ -1608,3 +1608,104 @@ Stage Summary:
 - Milestone 11 COMPLETE. Orchestrator (11 subsystems) + 5 API routes + 1 console section verified working end-to-end.
 - Total platform: 151 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians + 12 competitions + 9 missions + 6 ai + 10 developer + 12 marketplace + 13 research + 11 orchestrator), 72 API routes, 34 console sections.
 - Success criteria met: Participants experience a single coherent health journey even when using many Programs simultaneously; Programs cooperate safely without direct coupling; the Digital Health Twin is the participant's living, privacy-preserving health model; AI coordinates recommendations, schedules, measurements, and goals while remaining transparent and explainable. Eks-Health has evolved from a marketplace of independent Programs into a true Preventive Health Operating System.
+
+---
+Task ID: M12-0
+Agent: orchestrator
+Task: Begin Milestone 12 — Population Platform, Organizations & Health Ecosystems
+
+Work Log:
+- Verified M1-M11 intact (151 subsystems, 0 TS errors, clean lint).
+- Core philosophy: extends platform from helping individuals to helping organizations improve the health of populations while preserving participant privacy. Organizations never own participant health data. Individual privacy always takes precedence over organizational interests.
+- Subsystems: core, hierarchy, membership, privacy-firewall, funding, campaigns, policies, analytics, org-twin, org-marketplace, coordination, org-ai.
+- Privacy firewall is the defining capability: organizations see aggregates only, never individual health data unless explicitly granted.
+
+Stage Summary:
+- M12 begun. Population platform extends identity orgs + competitions + marketplace + research + orchestrator into organization-facing infrastructure.
+
+---
+Task ID: m12-3
+Agent: general-purpose (population: org-twin, org-marketplace, coordination, org-ai)
+Task: Build org-twin + org-marketplace + coordination + org-ai
+
+Work Log:
+- Read worklog.md (M1-M11 complete; M12 population core/hierarchy/membership/privacy-firewall built; m12-2 building funding/campaigns/policies/analytics in parallel).
+- Read src/population/core/index.ts for all branded ids, OrganizationTwin, OrgProgramCatalog, OrganizationInsight, OrgInsightType, PopulationError, POPULATION_EVENTS.
+- Read hierarchy, membership, privacy-firewall for the established pattern (manager + singleton, "server-only", buildEvent, getClock, generateId, try/catch around cross-subsystem calls).
+- Read kernel barrel + events/time modules to confirm helper signatures (getEventBus, buildEvent, generateId, getClock).
+- Inspected competition/marketplace/health/programs/research barrels + research/evidence engine to model defensive dynamic imports for cross-subsystem data gathering.
+- Created /home/z/my-project/src/population/org-twin/index.ts — OrgTwinManager + getOrgTwin(): builds a privacy-preserving Organization Digital Twin from real aggregate platform data (memberships, health profiles, programs adoption, competitions, funding budgets, technician sessions, research evidence). getOrCreate/get/update/getHistory/getRisks/getBudgets/getEvidence/getStats. Emits eks.population.twin.updated. All cross-subsystem calls guarded; risks emitted when a source is unavailable.
+- Created /home/z/my-project/src/population/org-marketplace/index.ts — OrgCatalogManager + getOrgCatalog(): approved/required/sponsored program catalogs per org. create/get/list/approveProgram/removeProgram/requireProgram/sponsorProgram/isApproved/isRequired/isSponsored/getApproved/getRequired/getSponsored/getStats. Auto-approves on require/sponsor. Emits eks.population.catalog.updated on every change.
+- Created /home/z/my-project/src/population/coordination/index.ts — MultiOrgCoordinator + getCoordinator(): resolves funding conflicts (priority employer>government>insurance>...>ngo>community), detects program duplication across org sponsorships, detects competition overlap (date-window intersection across DIFFERENT orgs), resolves permission conflicts (most restrictive grant wins; participant privacy always wins — any org lacking a grant on the field denies it to all). getOrgPriority/getStats. Emits eks.population.coordination.{funding_resolved,permission_resolved}.
+- Created /home/z/my-project/src/population/org-ai/index.ts — OrgAIEngine + getOrgAI(): generates OrganizationInsight objects for all 7 OrgInsightType values using deterministic statistical methods (linear regression, means, ratios, thresholds). Each insight includes title/summary/confidence/recommendations/dataSources and is marked "statistical_analysis" (not "ai_generated"). generate/get/list/getRecommendations/getForecast (linear-regression forecast over twin history for participation/engagement/budget_utilization)/getStats. Emits eks.population.insight.generated.
+- Verified with npx tsc --noEmit: zero errors in any of the four new files (remaining tsc errors are pre-existing in examples/ and skills/, unrelated to this task).
+
+Stage Summary:
+- Files created (4):
+  - src/population/org-twin/index.ts (OrgTwinManager, getOrgTwin, TwinSnapshot)
+  - src/population/org-marketplace/index.ts (OrgCatalogManager, getOrgCatalog)
+  - src/population/coordination/index.ts (MultiOrgCoordinator, getCoordinator, ORG_PRIORITY, GRANT_PERMISSIVENESS, resolution types)
+  - src/population/org-ai/index.ts (OrgAIEngine, getOrgAI, ForecastMetric, ForecastResult)
+- Key decisions:
+  - Every cross-subsystem data read is a cached, defensive dynamic import (loadMarketplace/loadCompetitions/loadMeasurements/loadProfiles/loadEvidence/loadSessions/loadFunding) so a missing or failing subsystem degrades the twin/insight gracefully rather than throwing.
+  - Twin never touches individual health data — only aggregate counts and rates already published by health/programs/competitions/funding/research.
+  - Funding-conflict priority extends the spec's named order (employer>government>insurance>ngo>community) to all OrganizationType values without ever violating the spec's relative ordering.
+  - Permission-conflict resolution is privacy-first: any org lacking an active grant on the field causes the field to be denied to all orgs; otherwise the most-restrictive grant type wins.
+  - Org AI is explicitly NOT an LLM — every insight type has a concrete statistical computation; emitted events carry analysisMethod:"statistical_analysis".
+- Population platform now has 8 subsystems (core, hierarchy, membership, privacy-firewall, org-twin, org-marketplace, coordination, org-ai). Did NOT create src/population/index.ts as instructed. m12-2 (funding/campaigns/policies/analytics) is the remaining sibling task.
+
+---
+Task ID: m12-2
+Agent: general-purpose (population: funding, campaigns, policies, analytics)
+Task: Build funding + campaigns + policies + analytics
+
+Work Log:
+- Read worklog (M1-M11 complete, M12 begun by orchestrator; population core/hierarchy/membership/privacy-firewall built).
+- Read src/population/core/index.ts for ALL types: FundingPolicy, FundingRequest, FundingTargetType, FundingRequestStatus, PublicHealthCampaign, CampaignStatus, OrganizationPolicy, PolicyType, OrganizationTwin, OrgProgramCatalog, OrganizationInsight, OrgInsightType, PopulationError, POPULATION_EVENTS, and all branded ids (FundingPolicyId, FundingRequestId, CampaignId, OrgPolicyId, etc.).
+- Read established pattern from src/population/hierarchy/index.ts, src/population/membership/index.ts, src/population/privacy-firewall/index.ts (manager class + singleton get<Name>(), import "server-only", emit events via getEventBus().publish(buildEvent(...)), PopulationError for validation/not-found/state-conflict, no external deps, no mocks).
+- Read @/kernel barrel (generateId, getClock, getEventBus, buildEvent), @/health barrel (getProfiles, getMeasurements), @/missions barrel (getMissions), @/competitions barrel (getCompetitions). Inspected Measurement, HealthProfile, Mission, Competition types for structural access. Inspected research/population and orchestrator/timeline for cross-subsystem access patterns (static imports with try/catch guards).
+- Built src/population/funding/index.ts (FundingEngine + getFunding()). Real policy creation with validation (maxAmountPerParticipant > 0, maxAmountTotal > 0, per ≤ total). Real request validation: policy active, targetType match, amount > 0, participant is active org member (via getMemberships().findByOrgAndAccount), per-participant committed limit, per-policy total committed limit. Real budget tracking: committedForPolicy/committedForParticipant/executedForPolicy recomputed from the request store on every call (single source of truth, no drift). Full lifecycle: request→approve→execute, reject, cancel with state-machine guards. getBudgetUtilization aggregates per-category allocated/committed/spent/remaining. getStats with by-status breakdown and totalFunded. Emits fundingPolicyCreated, fundingRequested, fundingApproved, fundingExecuted. Does NOT process payment — fundingRequested event is the signal for the Payment Provider.
+- Built src/population/campaigns/index.ts (CampaignManager + getCampaigns()). Real campaign lifecycle state machine (draft→scheduled→active→paused→completed/cancelled) with canTransition guards. launch (draft/scheduled→active, emits campaignLaunched), pause (active→paused), resume (paused→active), complete (active/paused→completed, emits campaignCompleted), cancel (non-terminal→cancelled). Composition: addProgram, addCompetition, addFunding, addContent (deduplicated). recordParticipation. getEffectiveness computes real participationRate (actual/goal), engagement (0-100 composite: 40% participation + 20% programs + 20% competitions + 20% content), programAdoption, roiEstimate (benefit/cost ratio). getStats with by-status, by-scope, avg participation rate. Pre-registers 4 demo campaigns: "National Hypertension Awareness Month" (government, national, goal 50k), "Corporate Wellness Week" (employer, organizational, goal 5k), "Youth Fitness Challenge" (school, regional, goal 12k), "Maternal Health Initiative" (ngo, national, goal 8k). Demo org discovery via getHierarchy().list({type}) with synthetic fallback IDs.
+- Built src/population/policies/index.ts (PolicyManager + getPolicies()). Real declarative rule engine: 11 operators (eq, ne, in, not_in, gt, lt, gte, lte, exists, contains, not_contains) with a real evaluateRule function. create/get/list/update/deactivate/activate with real operator validation on create+update. evaluate(orgId, context) evaluates all active policies against a context object, returns {policyId, policyName, type, enforce, passed, violations}[] with per-rule violation reasons. isProgramApproved (allowlist semantics: open by default, closed once a policy exists — checks program_id/programId/programs fields with in/contains operators). isMeasurementRequired (checks schema_id/schemaId/schemas fields). getPrivacyDefaults (parses privacy_defaults policy rules into structured PrivacyDefaults: defaultGrantTypes, defaultScopes, allowOrganizationalAccess, suppressSmallGroups, minGroupSize; returns sensible defaults if no policy exists). getStats with by-type and by-type-active counts. Emits policyUpdated on create/update/deactivate/activate.
+- Built src/population/analytics/index.ts (PopulationAnalytics + getPopulationAnalytics()). Real aggregate computation from live platform subsystems — ALL cross-subsystem calls guarded with try/catch (memberships, health profiles, health measurements, missions, competitions, hierarchy, privacy-firewall). Privacy by design: ALL returned data is AGGREGATE ONLY (no individual records ever leave the module), k-anonymity suppression (MIN_GROUP_SIZE=5), privacy-firewall-authorized level (full vs limited based on aggregate_performance/program_progress grants). getDashboard aggregates all metrics in one pass and stores a snapshot for trend tracking. getParticipationRate (active-in-program members / total). getProgramAdoption (per-program installs + active counts + activeRate). getAggregateImprovement (per-series (last-first)/first*100, averaged across members+schemas, small-group suppressed). getRetention (30/90-day activity via measurement timestamps mapped profile→account). getEngagement (0-100 composite: 40% mission completion + 30% measurement frequency + 30% competition engagement). getProgramEffectiveness (per-program adopter-only metrics: avgImprovement, missionCompletionRate, measurementCompliance, effectivenessScore, suppressed flag). getCompliance (verified/total measurements). getTrends (from stored dashboard history, 8 metrics, period-based filtering, direction + changePercent). getRegionalBreakdown (per-sub-org from hierarchy.getDescendants, small-group suppressed). getStats (total queries + by-method). Measurement value extraction handles number, string, {value}, and {systolic, diastolic} (MAP proxy).
+- Verified: `npx tsc --noEmit` reports ZERO errors across all four new files (src/population/funding, campaigns, policies, analytics) and zero errors in the entire src/population tree. Only pre-existing errors in examples/ and skills/ remain (unrelated to this task). `npx eslint` on all four files reports ZERO issues.
+- Did NOT create src/population/index.ts (per instructions).
+
+Stage Summary:
+- Files created:
+  - src/population/funding/index.ts — FundingEngine + getFunding() (real budget tracking, per-participant + per-policy limits, full request lifecycle, NO payment processing)
+  - src/population/campaigns/index.ts — CampaignManager + getCampaigns() (real lifecycle state machine, real effectiveness computation, 4 pre-registered demo campaigns)
+  - src/population/policies/index.ts — PolicyManager + getPolicies() (real 11-operator rule engine, real evaluate, isProgramApproved, isMeasurementRequired, getPrivacyDefaults)
+  - src/population/analytics/index.ts — PopulationAnalytics + getPopulationAnalytics() (real aggregate computation from 6 platform subsystems, all guarded, k-anonymity suppressed, privacy-firewall authorized, trend tracking)
+- Key decisions:
+  - All four files follow the established pattern (import "server-only"; manager class with private Map state; singleton get<Name>(); events via getEventBus().publish(buildEvent(...)); PopulationError for validation/not-found/state-conflict/quota_exceeded/funding_exhausted; no external deps; no mocks).
+  - Funding engine NEVER processes payment — it validates, tracks budgets, and emits fundingRequested for the Payment Provider. Committed amounts (pending+approved+executed) are recomputed from the request store on every validation call, guaranteeing consistency.
+  - Campaigns use a real state-machine with explicit transition table (TRANSITIONS + canTransition). Demo campaigns discover real orgs by type from the hierarchy with synthetic fallback IDs so they're always functional.
+  - Policies use a declarative rule format ({field, operator, value}) with 11 operators. isProgramApproved uses allowlist semantics (open by default, closed once a policy exists). getPrivacyDefaults merges rules from multiple active privacy_defaults policies.
+  - Analytics is privacy-first: ALL data is aggregate-only (no individual records), k-anonymity suppression at MIN_GROUP_SIZE=5, privacy-firewall authorized level (full vs limited). Cross-subsystem access uses defensive structural types (ProfileLike, MeasurementLike, MissionLike, CompetitionLike, MembershipLike) with try/catch on every call so a missing subsystem degrades to zeros. Dashboard snapshots are stored per-org (max 200) to power getTrends.
+  - Every engine uses immutable public contract types (readonly fields from core/index.ts); internal updates construct new objects rather than mutating.
+- Next: m12-3 (org-twin, org-marketplace, coordination, org-ai) can consume funding budget utilization, campaign effectiveness, policy evaluation, and analytics dashboards to build the organization digital twin and AI insights.
+
+---
+Task ID: M12-FINAL
+Agent: orchestrator
+Task: Complete Milestone 12 — Population Platform, Organizations & Health Ecosystems
+
+Work Log:
+- Built 12 population subsystems under src/population/: core, hierarchy, membership, privacy-firewall, funding, campaigns, policies, analytics, org-twin, org-marketplace, coordination, org-ai.
+- Core philosophy: organizations manage Programs, sponsor participation, fund competitions, analyze aggregate outcomes — but never own participant health data. Individual privacy always takes precedence over organizational interests.
+- Real working logic throughout: real org hierarchy with unlimited depth + cycle detection, real membership lifecycle (invite→accept→leave/remove), real privacy firewall (7 grant types, always-visible vs never-visible field lists, consent-gated access), real funding engine (policy limits, request lifecycle, budget tracking — NO payment processing), real campaign lifecycle with effectiveness computation, real policy evaluation (11 operators), real population analytics (aggregate-only, k-anonymity suppression), real org digital twin (aggregated from platform data), real multi-org coordination (funding conflict resolution, program duplication detection, privacy-first permission resolution), real org AI (statistical insights — never individual data).
+- Built 4 API routes under /api/population/*: organizations, memberships, funding, campaigns.
+- Built 1 new console section: Population Platform (organizations table + privacy firewall panel + campaigns + capabilities grid).
+- Updated platform-server.ts to boot population + seed 4 demo organizations; updated Overview + Footer to reflect M12.
+- Agent Browser end-to-end verification PASSED:
+  * Page loads with 35 nav sections (added Population Platform).
+  * Population: "Population Platform" heading, 4 demo organizations (Ministry of Health Ghana, Eks-Health Corp, University of Ghana, Accra Wellness NGO), privacy firewall panel, campaigns, capabilities grid.
+  * All population APIs return 200.
+  * No console errors.
+- 0 TypeScript errors, 0 lint errors across all our code.
+
+Stage Summary:
+- Milestone 12 COMPLETE. Population platform (12 subsystems) + 4 API routes + 1 console section verified working end-to-end.
+- Total platform: 163 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians + 12 competitions + 9 missions + 6 ai + 10 developer + 12 marketplace + 13 research + 11 orchestrator + 12 population), 76 API routes, 35 console sections.
+- Success criteria met: Any type of organization can participate using a unified model; organizations can sponsor Programs, competitions, measurements, and campaigns without compromising participant privacy; participants remain owners of their health data while benefiting from organizational funding; Eks-Health has evolved from a platform serving individuals into a global preventive health infrastructure.

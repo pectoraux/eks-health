@@ -209,6 +209,24 @@ import {
   getOrchestrationAnalytics,
   type OrchestratorError,
 } from "@/orchestrator";
+import {
+  bootPopulation,
+  populationInfo,
+  populationSnapshot,
+  seedPopulationDemoData,
+  getHierarchy,
+  getMemberships,
+  getPrivacyFirewall,
+  getFunding,
+  getCampaigns,
+  getPolicies,
+  getPopulationAnalytics,
+  getOrgTwin,
+  getOrgCatalog,
+  getCoordinator as getMultiOrgCoordinator,
+  getOrgAI,
+  type PopulationError,
+} from "@/population";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -234,14 +252,16 @@ export function ensurePlatform() {
     seedResearchDemoData();
     bootOrchestrator();
     seedOrchestratorDemoData();
+    bootPopulation();
+    seedPopulationDemoData();
     _booted = true;
   }
-  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo(), orchestrator: orchestratorInfo() };
+  return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo(), orchestrator: orchestratorInfo(), population: populationInfo() };
 }
 
 export function platformSnapshot() {
   ensurePlatform();
-  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot(), marketplace: marketplaceSnapshot(), research: researchSnapshot(), orchestrator: orchestratorSnapshot() };
+  return { kernel: kernelSnapshot(), identity: identitySnapshot(), programs: programsSnapshot(), health: healthSnapshot(), technicians: techniciansSnapshot(), competitions: competitionsSnapshot(), missions: missionsSnapshot(), developer: developerSnapshot(), marketplace: marketplaceSnapshot(), research: researchSnapshot(), orchestrator: orchestratorSnapshot(), population: populationSnapshot() };
 }
 
 export {
@@ -371,6 +391,17 @@ export {
   getSharedGoals,
   getSharedMeasurements,
   getOrchestrationAnalytics,
+  getHierarchy,
+  getMemberships,
+  getPrivacyFirewall,
+  getFunding,
+  getCampaigns,
+  getPolicies,
+  getPopulationAnalytics,
+  getOrgTwin,
+  getOrgCatalog,
+  getMultiOrgCoordinator,
+  getOrgAI,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */
@@ -386,10 +417,22 @@ export function withPlatform<T>(
       Response.json({
         ok: true,
         data,
-        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, marketplace: marketplaceInfo().version, research: researchInfo().version, orchestrator: orchestratorInfo().version, at: new Date().toISOString() },
+        meta: { kernel: kernelInfo().version, identity: identityInfo().version, programs: programsInfo().version, health: healthInfo().version, technicians: techniciansInfo().version, competitions: competitionsInfo().version, missions: missionsInfo().version, developer: developerInfo().version, marketplace: marketplaceInfo().version, research: researchInfo().version, orchestrator: orchestratorInfo().version, population: populationInfo().version, at: new Date().toISOString() },
       }),
     )
     .catch((err: unknown) => {
+      // PopulationError
+      if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.population.")) {
+        const e = err as PopulationError;
+        const body = { ok: false, error: e.toJSON() };
+        const status =
+          e.category === "validation" ? 400 :
+          e.category === "not_found" ? 404 :
+          e.category === "privacy_violation" || e.category === "not_authorized" ? 403 :
+          e.category === "state_conflict" ? 409 :
+          e.category === "quota_exceeded" || e.category === "funding_exhausted" ? 429 : 500;
+        return Response.json(body, { status });
+      }
       // OrchestratorError
       if (err && typeof err === "object" && "category" in err && "code" in err && "userMessage" in err && typeof (err as { code: string }).code === "string" && (err as { code: string }).code.startsWith("eks.orchestrator.")) {
         const e = err as OrchestratorError;

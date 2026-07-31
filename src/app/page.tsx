@@ -38,6 +38,7 @@ import { DeveloperSection } from "@/components/console/sections/developer";
 import { MarketplaceSection } from "@/components/console/sections/marketplace-console";
 import { ResearchSection } from "@/components/console/sections/research-console";
 import { OrchestratorSection } from "@/components/console/sections/orchestrator-console";
+import { PopulationSection } from "@/components/console/sections/population-console";
 import { ConsoleFooter } from "@/components/console/footer";
 
 export type ConsoleSection =
@@ -74,7 +75,8 @@ export type ConsoleSection =
   | "developer"
   | "marketplace-console"
   | "research"
-  | "orchestrator";
+  | "orchestrator"
+  | "population";
 
 export default function Home() {
   const [section, setSection] = useState<ConsoleSection>("overview");
@@ -193,6 +195,10 @@ function SectionRouter({
       return <MarketplaceSection data={data} />;
     case "research":
       return <ResearchSection data={data} />;
+    case "orchestrator":
+      return <OrchestratorSection data={data} />;
+    case "population":
+      return <PopulationSection data={data} />;
   }
 
   function onSelectProgramBack() {

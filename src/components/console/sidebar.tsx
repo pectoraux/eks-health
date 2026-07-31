@@ -80,6 +80,7 @@ const NAV: NavItem[] = [
   { id: "marketplace-console", label: "Health Marketplace", icon: Store, group: "Marketplace" },
   { id: "research", label: "Research & Intelligence", icon: FlaskConical, group: "Marketplace" },
   { id: "orchestrator", label: "Health Orchestrator", icon: Network, group: "Orchestration" },
+  { id: "population", label: "Population Platform", icon: Building2, group: "Population" },
 ];
 
 export function Sidebar({
