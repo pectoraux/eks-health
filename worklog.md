@@ -1709,3 +1709,59 @@ Stage Summary:
 - Milestone 12 COMPLETE. Population platform (12 subsystems) + 4 API routes + 1 console section verified working end-to-end.
 - Total platform: 163 subsystems (16 kernel + 15 identity + 16 programs + 17 health + 14 technicians + 12 competitions + 9 missions + 6 ai + 10 developer + 12 marketplace + 13 research + 11 orchestrator + 12 population), 76 API routes, 35 console sections.
 - Success criteria met: Any type of organization can participate using a unified model; organizations can sponsor Programs, competitions, measurements, and campaigns without compromising participant privacy; participants remain owners of their health data while benefiting from organizational funding; Eks-Health has evolved from a platform serving individuals into a global preventive health infrastructure.
+
+---
+Task ID: M12.5-FINAL
+Agent: orchestrator
+Task: Complete Milestone 12.5 — Product Experience, Authentication & Role-Based User Journeys
+
+Work Log:
+- Built production authentication system using Identity Platform's AccountManager + SessionManager:
+  - Sign in (POST /api/auth/sign-in) with PBKDF2 password verification + session creation + cookie persistence
+  - Sign out (POST /api/auth/sign-out) with cookie clearing
+  - Session check (GET /api/auth/session) for client-side auth state
+  - Role switching (POST /api/auth/switch-role) for multi-role accounts
+  - Waitlist registration (POST /api/auth/sign-up) with name, email, country, roles, reason, referral
+  - Waitlist management (GET /api/auth/waitlist) for admin approval
+- Created permanent admin account: ekontetevi@gmail.com / Payswap123456 (bypasses waitlist, all 7 personas)
+- Created 5 demo accounts with Quick Login buttons: participant, technician, developer, researcher, org-admin
+- Built premium landing page at / replacing the engineering console:
+  - Hero: "Prevent disease before it happens" with gradient text, stats bar, dual CTA
+  - 9 feature cards: Track Verified Health, Compete & Earn, AI Coach, Marketplace, Technician, Developer, Research, Organizations, Privacy
+  - 6 role experience cards with features lists
+  - 12-layer platform architecture visualization
+  - CTA section + footer
+- Built sign-in page at /sign-in with Quick Demo Login buttons for all 6 roles
+- Built sign-up (waitlist) page at /sign-up with role selection, country, reason, referral
+- Built role-based dashboard at /dashboard:
+  - Auto-redirects to /sign-in if not authenticated
+  - Persona-specific stats (missions, streak, rank, rewards for participant; appointments, reputation for technician; etc.)
+  - Quick action buttons per role
+  - Role switcher for multi-role accounts
+  - Link to full platform console
+- Moved original 35-section platform console to /console (fully preserved)
+- All pages responsive, dark theme, emerald accent, premium feel
+- Agent Browser verification PASSED:
+  * Landing page: "Prevent disease before it happens" heading, hero, features, roles, architecture, CTA
+  * Sign-in: Quick Demo Login buttons for all 6 roles visible
+  * Quick login: Clicked Participant → "Welcome, Ama Serwaa" dashboard with stats + role switcher
+  * Console: still works at /console with all 35 sections
+  * No console errors
+- Pushed to GitHub (commit 81a1f38)
+- Vercel deployment: READY, all routes return 200
+- Production verification:
+  * / : 200 (0.78s)
+  * /sign-in : 200
+  * /sign-up : 200
+  * /dashboard : 200
+  * /console : 200
+  * /api/auth/session : 200
+  * POST /api/auth/sign-in (participant@demo.eks.health) → ✅ success
+  * POST /api/auth/sign-in (ekontetevi@gmail.com / Payswap123456) → ✅ admin with 7 roles
+- 0 TypeScript errors, 0 lint errors.
+
+Stage Summary:
+- Milestone 12.5 COMPLETE. Product experience with auth, landing page, sign-in, sign-up, dashboard, role switching, demo accounts, and admin account.
+- The platform now feels like a polished consumer product rather than an architecture demonstration.
+- GitHub: https://github.com/pectoraux/eks-health (commit 81a1f38)
+- Vercel: https://eks-health.vercel.app (all routes live)
