@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   ensurePlatform,
+  ensureHydrated,
   getMissionManager, getGoalManager, getHabitManager,
   getCompetitionRegistry, getHealthMeasurements,
   getTechnicianRegistry, getDeveloperManager,
@@ -14,6 +15,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   ensurePlatform();
+  await ensureHydrated();
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ ok: false, error: { message: "Not authenticated" } }, { status: 401 });

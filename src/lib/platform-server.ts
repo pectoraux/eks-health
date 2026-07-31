@@ -242,13 +242,11 @@ export function ensurePlatform() {
     bootPrograms();
     seedProgramDemoData();
     bootHealth();
-    seedHealthDemoData();
     bootTechnicians();
     seedTechnicianDemoData();
     bootCompetitions();
     seedCompetitionDemoData();
     bootMissions();
-    seedMissionDemoData();
     bootDeveloper();
     seedDeveloperDemoData();
     bootMarketplace();
@@ -262,6 +260,29 @@ export function ensurePlatform() {
     _booted = true;
   }
   return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo(), orchestrator: orchestratorInfo(), population: populationInfo() };
+}
+
+/**
+ * Async hydration phase. Runs once (idempotent via a cached promise).
+ * Hydrates DB-backed stores from SQLite so data survives server restart.
+ * Currently hydrates: health measurements (and skips re-seeding if present).
+ * Routes that depend on DB-backed data should `await ensureHydrated()`.
+ */
+let _hydratePromise: Promise<void> | null = null;
+
+export function ensureHydrated(): Promise<void> {
+  if (!_hydratePromise) {
+    _hydratePromise = (async () => {
+      ensurePlatform();
+      try {
+        await seedHealthDemoData();
+        await seedMissionDemoData();
+      } catch (err) {
+        console.error("[platform] hydration failed:", err);
+      }
+    })();
+  }
+  return _hydratePromise;
 }
 
 export function platformSnapshot() {

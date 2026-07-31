@@ -2017,3 +2017,29 @@ Stage Summary:
 - Measurement write-behind: SHIPPED + verified (9 rows persisted).
 - Measurement hydration: IMPLEMENTED, pending async-boot refactor to enable safely.
 - Remaining in-memory (no persistence yet): missions, goals, habits, and 16 other modules.
+
+---
+Task ID: prod-4
+Agent: main (claude)
+Task: Enable measurement hydration via async boot phase (ensureHydrated). Wire goals + habits to DB.
+
+Work Log:
+- Made seedHealthDemoData() async: hydrates measurements from DB first, skips demo seeding if rows already exist (avoids duplicates on restart).
+- Removed seedHealthDemoData() from sync ensurePlatform(). Added async ensureHydrated() in platform-server.ts (idempotent via cached promise) that calls seedHealthDemoData(). Added `await ensureHydrated()` to dashboard route + health/measurements route (GET + POST).
+- VERIFIED measurements: first boot 9 rows, after restart still 9 (not 18). Dashboard reports total:9 from hydrated store.
+- Made seedMissionDemoData() async: hydrates goals + habits from DB first, skips their creation if already present (existingGoals/existingHabits checks). Missions stay in-memory (re-seed fresh each boot — they're ephemeral daily items).
+- Removed seedMissionDemoData() from sync ensurePlatform(). Added `await seedMissionDemoData()` to ensureHydrated().
+- Added db import + _persist + hydrateFromDb to GoalManager (src/missions/goals/index.ts). Write-behind hooked into create, updateProgress, adapt, cancel.
+- Added db import + _persist + hydrateFromDb to HabitManager (src/missions/habits/index.ts). Write-behind hooked into create, complete, miss, deactivate.
+- Updated prisma schema: EksGoal and EksHabit now use dataJson snapshot column (matching the measurement pattern).
+- VERIFIED all 5 data types across restart (single-session, DB reset + restart):
+  * First boot: goals:1, habits:2, measurements:9, accounts:6, sessions:1
+  * After restart: goals:1, habits:2, measurements:9, accounts:6, sessions:2 (1 hydrated + 1 new)
+  * Zero duplicates across all tables.
+  * Dashboard loads real data from hydrated stores: goals total:1, habits total:2, bestStreak:3.
+- Lint clean throughout.
+
+Stage Summary:
+- 5 core data types now DB-backed and restart-safe: accounts, sessions, measurements, goals, habits.
+- Pattern: in-memory store = source of truth for running process; DB = restart snapshot. Write-behind is fire-and-forget. Hydration runs once via ensureHydrated() cached promise, before first data-accessing request.
+- Remaining in-memory (not yet persisted): missions (ephemeral daily items, intentionally re-seeded), competitions, technician sessions, marketplace listings, research cohorts, and 12 other modules.

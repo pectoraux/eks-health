@@ -1,10 +1,11 @@
-import { withPlatform, getHealthMeasurements, getHealthSources, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getHealthMeasurements, getHealthSources, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
 export function GET(req: Request) {
   return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const url = new URL(req.url);
     const profileId = url.searchParams.get("profileId") ?? undefined;
     const schemaId = url.searchParams.get("schemaId") ?? undefined;
@@ -20,6 +21,7 @@ export function GET(req: Request) {
 export function POST(req: Request) {
   return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const body = await req.json() as {
       schemaId?: string; profileId?: string; value?: unknown; unitId?: string;
       sourceId?: string; collectedBy?: string; tags?: string[];

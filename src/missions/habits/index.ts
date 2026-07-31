@@ -19,6 +19,7 @@ import {
 } from "../core";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
 import { MISSION_EVENTS } from "../core";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Habit
@@ -115,6 +116,7 @@ export class HabitManager {
     this.habits.set(habitId, habit);
     const list = this.byParticipant.get(input.participantId) ?? [];
     this.byParticipant.set(input.participantId, [...list, habitId]);
+    void this._persist(habitId);
     return habit;
   }
 
@@ -178,6 +180,7 @@ export class HabitManager {
       score: this.computeScore(newStreakCurrent, habit.totalCompletions + 1),
     };
     this.habits.set(habitId, updatedHabit);
+    void this._persist(habitId);
     this.completions.push({ id: generateId("hc_"), habitId, participantId: habit.participantId, completedAt: now, value, notes, usedGrace });
 
     void getEventBus().publish(buildEvent(MISSION_EVENTS.habitUpdated, { habitId, participantId: habit.participantId, currentStreak: newStreakCurrent }, {}, "domain"));
@@ -198,6 +201,7 @@ export class HabitManager {
       streak: { ...habit.streak, current: 0, brokenAt: getClock().iso() },
     };
     this.habits.set(habitId, updated);
+    void this._persist(habitId);
     return updated;
   }
 
@@ -206,6 +210,7 @@ export class HabitManager {
     if (!habit) throw new MissionError({ code: "eks.mission.habit.not_found", category: "not_found", message: "Not found." });
     const updated = { ...habit, active: false };
     this.habits.set(habitId, updated);
+    void this._persist(habitId);
     return updated;
   }
 
@@ -235,6 +240,54 @@ export class HabitManager {
     const streakScore = Math.min(currentStreak * 5, 60);
     const volumeScore = Math.min(totalCompletions * 2, 40);
     return streakScore + volumeScore;
+  }
+
+  /** Write-behind: upsert habit as JSON snapshot to EksHabit. Fire-and-forget. */
+  private async _persist(id: HabitId): Promise<void> {
+    const h = this.habits.get(id);
+    if (!h) return;
+    try {
+      await db.eksHabit.upsert({
+        where: { id },
+        create: {
+          id: h.id,
+          participantId: h.participantId,
+          dataJson: JSON.stringify(h),
+          active: h.active,
+          createdAt: new Date(h.createdAt),
+        },
+        update: {
+          dataJson: JSON.stringify(h),
+          active: h.active,
+        },
+      });
+    } catch (err) {
+      console.error("[habits] DB write-behind failed for", h.id, err);
+    }
+  }
+
+  /** Hydrate habits from DB. Rebuilds byParticipant index. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksHabit.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.habits.has(row.id as HabitId)) continue;
+        try {
+          const h = JSON.parse(row.dataJson) as Habit;
+          this.habits.set(h.id, h);
+          const list = this.byParticipant.get(h.participantId) ?? [];
+          this.byParticipant.set(h.participantId, [...list, h.id]);
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[habits] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

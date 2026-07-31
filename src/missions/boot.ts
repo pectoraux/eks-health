@@ -144,7 +144,7 @@ function ensureBooted() {
 
 let _seeded = false;
 
-export function seedMissionDemoData(): { missionIds: MissionId[] } {
+export async function seedMissionDemoData(): Promise<{ missionIds: MissionId[] }> {
   if (_seeded) return { missionIds: [] };
   ensureBooted();
 
@@ -158,6 +158,14 @@ export function seedMissionDemoData(): { missionIds: MissionId[] } {
   const missionIds: MissionId[] = [];
   const now = new Date();
   const todayISO = (offsetDays = 0) => new Date(now.getTime() + offsetDays * 86400000).toISOString();
+
+  // Hydrate goals + habits from DB first. If they already exist (from a
+  // previous server lifetime), their creation below is skipped to avoid
+  // duplicates. Missions are in-memory only and re-seed fresh each boot.
+  await goals.hydrateFromDb();
+  await habits.hydrateFromDb();
+  const existingGoals = goals.list({ participantId }).length;
+  const existingHabits = habits.list({ participantId, activeOnly: true }).length;
 
   // Define mission templates
   const templateDefs = [
@@ -221,37 +229,41 @@ export function seedMissionDemoData(): { missionIds: MissionId[] } {
     } catch { /* already exists */ }
   }
 
-  // Create a goal
-  try {
-    goals.create({
-      programId, participantId,
-      name: "Reduce Resting Heart Rate",
-      description: "Lower resting heart rate to 60 bpm over 90 days.",
-      type: "measurement_target",
-      targetValue: 60, unit: "bpm",
-      measurementSchemaId: "sch_resting_heart_rate",
-      deadline: todayISO(90),
-      adaptive: true,
-      milestones: [
-        { name: "Below 70", description: "Reduce to below 70 bpm", targetValue: 70, deadline: todayISO(30), dependencies: [] },
-        { name: "Below 65", description: "Reduce to below 65 bpm", targetValue: 65, deadline: todayISO(60), dependencies: [] },
-      ],
-    });
-  } catch { /* already exists */ }
-
-  // Create habits
-  const habitDefs = [
-    { name: "Morning Meditation", description: "Meditate for 10 minutes each morning", frequency: "daily" as const },
-    { name: "Hydration Check", description: "Drink 8 glasses of water", frequency: "daily" as const },
-  ];
-  for (const h of habitDefs) {
+  // Create a goal (skip if hydrated from DB)
+  if (existingGoals === 0) {
     try {
-      const habit = habits.create({ programId, participantId, ...h });
-      // Simulate some completions
-      for (let i = 0; i < 5; i++) {
-        try { habits.complete(habit.id); } catch { /* ignore */ }
-      }
+      goals.create({
+        programId, participantId,
+        name: "Reduce Resting Heart Rate",
+        description: "Lower resting heart rate to 60 bpm over 90 days.",
+        type: "measurement_target",
+        targetValue: 60, unit: "bpm",
+        measurementSchemaId: "sch_resting_heart_rate",
+        deadline: todayISO(90),
+        adaptive: true,
+        milestones: [
+          { name: "Below 70", description: "Reduce to below 70 bpm", targetValue: 70, deadline: todayISO(30), dependencies: [] },
+          { name: "Below 65", description: "Reduce to below 65 bpm", targetValue: 65, deadline: todayISO(60), dependencies: [] },
+        ],
+      });
     } catch { /* already exists */ }
+  }
+
+  // Create habits (skip if hydrated from DB)
+  if (existingHabits === 0) {
+    const habitDefs = [
+      { name: "Morning Meditation", description: "Meditate for 10 minutes each morning", frequency: "daily" as const },
+      { name: "Hydration Check", description: "Drink 8 glasses of water", frequency: "daily" as const },
+    ];
+    for (const h of habitDefs) {
+      try {
+        const habit = habits.create({ programId, participantId, ...h });
+        // Simulate some completions
+        for (let i = 0; i < 5; i++) {
+          try { habits.complete(habit.id); } catch { /* ignore */ }
+        }
+      } catch { /* already exists */ }
+    }
   }
 
   // Create a knowledge base

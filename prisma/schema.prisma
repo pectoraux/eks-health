@@ -98,30 +98,22 @@ model EksMeasurement {
 
 model EksGoal {
   id           String   @id
-  accountId    String
-  name         String
-  targetValue  Float
-  currentValue Float    @default(0)
-  unit         String?
-  state        String   @default("active") // active | achieved | abandoned
+  participantId String
+  dataJson     String   // full Goal object as JSON snapshot
+  state        String   @default("active")
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
 
-  @@index([accountId])
+  @@index([participantId])
   @@index([state])
 }
 
 model EksHabit {
   id            String   @id
-  accountId     String
-  name          String
-  currentStreak Int      @default(0)
-  bestStreak    Int      @default(0)
-  score         Int      @default(0)
+  participantId String
+  dataJson      String   // full Habit object as JSON snapshot
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
 
-  @@index([accountId])
+  @@index([participantId])
   @@index([active])
 }

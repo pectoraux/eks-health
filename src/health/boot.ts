@@ -166,13 +166,22 @@ function ensureBooted() {
 
 let _seeded = false;
 
-export function seedHealthDemoData(): void {
+export async function seedHealthDemoData(): Promise<void> {
   if (_seeded) return;
   ensureBooted();
 
   const schemas = getSchemas();
   const sources = getSources();
   const measurements = getMeasurements();
+
+  // Hydrate measurements from DB first. If rows already exist (from a
+  // previous server lifetime), skip demo seeding to avoid duplicates.
+  await measurements.hydrateFromDb();
+  if (measurements.list().length > 0) {
+    _seeded = true;
+    return;
+  }
+  _seeded = true;
   const profiles = getProfiles();
   const programId = asProgramId("prg_cardio_care");
   const accountId = asAccountId("acc_demo_1");

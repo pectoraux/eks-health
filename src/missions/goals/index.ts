@@ -21,6 +21,7 @@ import {
 } from "../core";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
 import { MISSION_EVENTS } from "../core";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Goal
@@ -96,6 +97,7 @@ export class GoalManager {
     };
     this.goals.set(goal.id, goal);
     this.indexBy(goal);
+    void this._persist(goal.id);
     return goal;
   }
 
@@ -133,6 +135,7 @@ export class GoalManager {
       achievedAt: achieved ? getClock().iso() : undefined,
     };
     this.goals.set(id, updated);
+    void this._persist(id);
     if (achieved) {
       void getEventBus().publish(buildEvent(MISSION_EVENTS.goalAchieved, { goalId: id, participantId: goal.participantId, target: goal.targetValue, actual: currentValue }, {}, "domain"));
     }
@@ -149,6 +152,7 @@ export class GoalManager {
     const adaptation = { at: getClock().iso(), from: goal.targetValue, to: newTarget, reason };
     const updated: Goal = { ...goal, targetValue: newTarget, adaptationHistory: [...goal.adaptationHistory, adaptation] };
     this.goals.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -157,6 +161,7 @@ export class GoalManager {
     if (!goal) throw new MissionError({ code: "eks.mission.goal.not_found", category: "not_found", message: "Not found." });
     const updated = { ...goal, state: "cancelled" as const };
     this.goals.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -175,6 +180,53 @@ export class GoalManager {
     this.byParticipant.set(g.participantId, [...pList, g.id]);
     const prList = this.byProgram.get(g.programId) ?? [];
     this.byProgram.set(g.programId, [...prList, g.id]);
+  }
+
+  /** Write-behind: upsert goal as JSON snapshot to EksGoal. Fire-and-forget. */
+  private async _persist(id: GoalId): Promise<void> {
+    const g = this.goals.get(id);
+    if (!g) return;
+    try {
+      await db.eksGoal.upsert({
+        where: { id },
+        create: {
+          id: g.id,
+          participantId: g.participantId,
+          dataJson: JSON.stringify(g),
+          state: g.state,
+          createdAt: new Date(g.createdAt),
+        },
+        update: {
+          dataJson: JSON.stringify(g),
+          state: g.state,
+        },
+      });
+    } catch (err) {
+      console.error("[goals] DB write-behind failed for", g.id, err);
+    }
+  }
+
+  /** Hydrate goals from DB. Rebuilds byParticipant/byProgram indexes. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksGoal.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.goals.has(row.id as GoalId)) continue;
+        try {
+          const g = JSON.parse(row.dataJson) as Goal;
+          this.goals.set(g.id, g);
+          this.indexBy(g);
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[goals] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 
