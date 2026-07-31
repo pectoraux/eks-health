@@ -39,6 +39,7 @@ export {
 } from "./i18n";
 export * from "./storage";
 export * from "./search";
+export * from "./search-semantic";
 export * from "./notification";
 export * from "./scheduler";
 export * from "./observability";

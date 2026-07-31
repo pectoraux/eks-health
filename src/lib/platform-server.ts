@@ -227,6 +227,11 @@ import {
   getOrgAI,
   type PopulationError,
 } from "@/population";
+import { getBadges, getLevels, getCollections as getAchievementCollections } from "@/achievements";
+import { getFriends, getTeams, getCommunities, getMessaging, getFeeds, getInvites } from "@/social";
+import { getGraphQL, getWebhooks } from "@/platform-api";
+import { getReportBuilder, getReportScheduler } from "@/reporting";
+import { getSemanticSearch } from "@/kernel";
 
 let _booted = false;
 export function ensurePlatform() {
@@ -402,6 +407,20 @@ export {
   getOrgCatalog,
   getMultiOrgCoordinator,
   getOrgAI,
+  getBadges,
+  getLevels,
+  getAchievementCollections,
+  getFriends,
+  getTeams,
+  getCommunities,
+  getMessaging,
+  getFeeds,
+  getInvites,
+  getGraphQL,
+  getWebhooks,
+  getReportBuilder,
+  getReportScheduler,
+  getSemanticSearch,
 };
 
 /** Wrap a handler so the platform is booted and errors become JSON. */

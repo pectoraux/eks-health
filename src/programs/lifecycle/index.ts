@@ -418,4 +418,161 @@ export function getRegistry(): ProgramRegistry {
   return _registry;
 }
 
+// ---------------------------------------------------------------------------
+// Canary Release Manager
+// ---------------------------------------------------------------------------
+
+export interface CanaryRelease {
+  readonly id: string;
+  readonly programId: ProgramId;
+  readonly versionId: ProgramVersionId;
+  readonly rolloutPercent: number; // 0-100
+  readonly targetPercent: number;
+  readonly status: "initiated" | "rolling" | "completed" | "paused" | "aborted" | "rolled_back";
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly abortThreshold: { errorRate: number; crashRate: number };
+  readonly metrics: { installs: number; errors: number; crashes: number; positiveFeedback: number };
+  readonly history: { at: string; action: string; detail?: string }[];
+}
+
+export class CanaryReleaseManager {
+  private readonly releases = new Map<string, CanaryRelease>();
+  private readonly byProgram = new Map<ProgramId, string[]>();
+
+  initiate(input: {
+    programId: ProgramId;
+    versionId: ProgramVersionId;
+    targetPercent?: number;
+    abortErrorRate?: number;
+    abortCrashRate?: number;
+  }): CanaryRelease {
+    const release: CanaryRelease = {
+      id: generateId("canary_"),
+      programId: input.programId,
+      versionId: input.versionId,
+      rolloutPercent: 5, // start at 5%
+      targetPercent: input.targetPercent ?? 100,
+      status: "initiated",
+      startedAt: getClock().iso(),
+      abortThreshold: { errorRate: input.abortErrorRate ?? 0.05, crashRate: input.abortCrashRate ?? 0.01 },
+      metrics: { installs: 0, errors: 0, crashes: 0, positiveFeedback: 0 },
+      history: [{ at: getClock().iso(), action: "initiated", detail: `Starting canary at 5% rollout` }],
+    };
+    this.releases.set(release.id, release);
+    const list = this.byProgram.get(input.programId) ?? [];
+    this.byProgram.set(input.programId, [...list, release.id]);
+    void getEventBus().publish(buildEvent("eks.program.canary.initiated", { releaseId: release.id, programId: input.programId, rolloutPercent: 5 }, {}, "domain"));
+    return release;
+  }
+
+  ramp(releaseId: string, newPercent: number): CanaryRelease {
+    const release = this.releases.get(releaseId);
+    if (!release) throw new Error("Canary release not found");
+    if (release.status !== "rolling" && release.status !== "initiated") {
+      throw new Error(`Cannot ramp a ${release.status} canary`);
+    }
+    const updated: CanaryRelease = {
+      ...release,
+      rolloutPercent: Math.min(newPercent, release.targetPercent),
+      status: newPercent >= release.targetPercent ? "completed" : "rolling",
+      completedAt: newPercent >= release.targetPercent ? getClock().iso() : undefined,
+      history: [...release.history, { at: getClock().iso(), action: "ramp", detail: `Ramped to ${newPercent}%` }],
+    };
+    this.releases.set(releaseId, updated);
+    void getEventBus().publish(buildEvent("eks.program.canary.ramped", { releaseId, rolloutPercent: updated.rolloutPercent }, {}, "domain"));
+    return updated;
+  }
+
+  pause(releaseId: string): CanaryRelease {
+    return this.updateStatus(releaseId, "paused", "Canary paused");
+  }
+
+  resume(releaseId: string): CanaryRelease {
+    return this.updateStatus(releaseId, "rolling", "Canary resumed");
+  }
+
+  abort(releaseId: string, reason: string): CanaryRelease {
+    const updated = this.updateStatus(releaseId, "aborted", `Aborted: ${reason}`);
+    void getEventBus().publish(buildEvent("eks.program.canary.aborted", { releaseId, reason }, {}, "domain"));
+    return updated;
+  }
+
+  complete(releaseId: string): CanaryRelease {
+    return this.updateStatus(releaseId, "completed", "Canary completed — full rollout");
+  }
+
+  rollback(releaseId: string): CanaryRelease {
+    const updated = this.updateStatus(releaseId, "rolled_back", "Rolled back to previous version");
+    void getEventBus().publish(buildEvent("eks.program.rolledBack", { releaseId, reason: "canary_rollback" }, {}, "domain"));
+    return updated;
+  }
+
+  recordMetrics(releaseId: string, metrics: Partial<CanaryRelease["metrics"]>): CanaryRelease {
+    const release = this.releases.get(releaseId);
+    if (!release) throw new Error("Not found");
+    const updated: CanaryRelease = {
+      ...release,
+      metrics: { ...release.metrics, ...metrics },
+    };
+    this.releases.set(releaseId, updated);
+    // Auto-abort if thresholds exceeded
+    const totalInstalls = updated.metrics.installs;
+    if (totalInstalls > 100) {
+      const errorRate = updated.metrics.errors / totalInstalls;
+      const crashRate = updated.metrics.crashes / totalInstalls;
+      if (errorRate > release.abortThreshold.errorRate || crashRate > release.abortThreshold.crashRate) {
+        return this.abort(releaseId, `Threshold exceeded: errorRate=${(errorRate * 100).toFixed(1)}%, crashRate=${(crashRate * 100).toFixed(1)}%`);
+      }
+    }
+    return updated;
+  }
+
+  get(releaseId: string): CanaryRelease | undefined {
+    return this.releases.get(releaseId);
+  }
+
+  listByProgram(programId: ProgramId): CanaryRelease[] {
+    return (this.byProgram.get(programId) ?? []).map((id) => this.releases.get(id)!).filter(Boolean);
+  }
+
+  getActive(programId: ProgramId): CanaryRelease | undefined {
+    return this.listByProgram(programId).find((r) => r.status === "rolling" || r.status === "initiated");
+  }
+
+  list(): CanaryRelease[] {
+    return [...this.releases.values()];
+  }
+
+  getStats(): { total: number; active: number; completed: number; aborted: number; rolledBack: number } {
+    const list = [...this.releases.values()];
+    return {
+      total: list.length,
+      active: list.filter((r) => r.status === "rolling" || r.status === "initiated").length,
+      completed: list.filter((r) => r.status === "completed").length,
+      aborted: list.filter((r) => r.status === "aborted").length,
+      rolledBack: list.filter((r) => r.status === "rolled_back").length,
+    };
+  }
+
+  private updateStatus(releaseId: string, status: CanaryRelease["status"], detail: string): CanaryRelease {
+    const release = this.releases.get(releaseId);
+    if (!release) throw new Error("Not found");
+    const updated: CanaryRelease = {
+      ...release,
+      status,
+      completedAt: status === "completed" || status === "aborted" || status === "rolled_back" ? getClock().iso() : undefined,
+      history: [...release.history, { at: getClock().iso(), action: status, detail }],
+    };
+    this.releases.set(releaseId, updated);
+    return updated;
+  }
+}
+
+let _canary: CanaryReleaseManager | null = null;
+export function getCanaryManager(): CanaryReleaseManager {
+  if (!_canary) _canary = new CanaryReleaseManager();
+  return _canary;
+}
+
 export { parseSemVer, semVerToString, compareSemVer };
