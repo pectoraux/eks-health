@@ -84,7 +84,7 @@ export async function GET() {
       try {
         data.platform = {
           accounts: getAccounts().list().map((a) => ({ id: a.id, email: a.email, displayName: a.displayName, state: a.state, personas: a.personas, activePersona: a.activePersona, createdAt: a.createdAt })),
-          waitlist: getWaitlist(),
+          waitlist: await getWaitlist(),
         };
       } catch { data.platform = { accounts: [], waitlist: [] }; }
       try { data.marketplace = { stats: getMarketplace().getStats() }; } catch { data.marketplace = { stats: {} }; }

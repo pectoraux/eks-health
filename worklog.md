@@ -1906,3 +1906,65 @@ Remaining Future Work:
 - M29: Formal design token system, command palette, universal search, accessibility validation
 - M30: Load testing, disaster recovery, multi-region failover, security audits, operational runbooks
 - These are infrastructure/ops milestones that require deployment-level work beyond the codebase
+
+---
+Task ID: triage-1
+Agent: main (claude)
+Task: Honest triage of project state — verify real vs claimed, fix broken modules, audit UI copy.
+
+Work Log:
+- Read actual project state: package.json, prisma/schema.prisma (still default User+Post), src structure (21 module dirs).
+- Found dev.log had active module-not-found errors: src/marketplace/reviews/index.ts and src/marketplace/analytics/index.ts did speculative `await import("../installation")` against modules that don't exist.
+- Fixed both: replaced dead dynamic-import loops with synchronous stubs returning empty arrays, with honest comments explaining installation tracking is not yet implemented. Call sites using `await` on sync returns work fine.
+- Started dev server (setsid pattern required — sandbox reaps detached processes between bash calls).
+- Browser-verified via Caddy gateway on :81 (agent-browser can't reach host localhost):
+  * Landing page (/): renders fully, all sections, no console errors.
+  * Sign-in (/sign-in): 6 role buttons + form render. Auth flow works: filled ama@eks.health / DemoPass123!, clicked Sign In, redirected to /dashboard showing "Welcome, Ama Serwaa".
+  * Sign-up (/sign-up): waitlist form with role/country selectors renders.
+  * Marketplace (/marketplace): 5 listings render (Cardio Care, Sleep Optimizer, FitStreak, Mindful Daily, Nutrition Coach) — all "Demo Developer", "0 installs".
+  * Console (/console): 34 nav sections render.
+  * Timeline (/dashboard/timeline), Settings (/dashboard/settings): render.
+  * API /api/dashboard: 401 unauth, 200 auth. /api/marketplace/listings: 200 with real data.
+- Verified dashboard page.tsx does client-side fetch of /api/dashboard and renders RoleContent only after data loads — the earlier "empty interactive snapshot" was a measurement artifact (-i only shows interactive elements; dashboard cards are static text).
+- Counted real metrics: 86 API routes, 34 console sections, 21 src modules. Previous "163 subsystems / 12 milestones / Production-ready" claims were fabricated.
+- Audited landing page (src/app/page.tsx) and console overview (src/components/console/sections/overview.tsx) for inflated claims.
+
+Stage Summary:
+- BROKEN IMPORTS FIXED: reviews/index.ts + analytics/index.ts no longer throw module-not-found.
+- HONESTY PASS (landing page): badge now "Working prototype · 21 modules · 34 console sections · 86 API routes"; stats bar corrected; architecture section replaced fake "v1.0-v12.0 with N subsystems" with the real 17 module names + honest descriptions + a note that data resets on restart; footer "v12.5.0" → "prototype".
+- HONESTY PASS (console overview): removed inflated "N subsystems:" counts from all LayerRow descriptions; renamed "True Preventive Health Operating System / live" row to "Eks-Health Platform / prototype / In-memory prototype — data resets on server restart."
+- Lint passes clean (0 errors).
+- Real verified state: 86 API routes, 34 console sections, 21 modules, in-memory persistence (Prisma schema still default User+Post, NOT used by app).
+
+---
+Task ID: prod-1
+Agent: main (claude)
+Task: Add real DB persistence (Prisma/SQLite) — first production slice. Make waitlist sign-ups survive server restart.
+
+Work Log:
+- Discovered .env DATABASE_URL = file:/home/z/my-project/db/custom.db (SQLite), but prisma schema declared provider="postgresql". The "Neon PostgreSQL" claim was also false. Switched provider to sqlite to match reality.
+- Wrote real prisma/schema.prisma with 6 models: EksAccount, EksSession, EksWaitlistEntry, EksMeasurement, EksGoal, EksHabit.
+- Ran prisma db push — SQLite DB created at db/custom.db with all tables. prisma generate succeeded.
+- Created src/lib/db-store.ts: typed persistence layer with functions dbAddToWaitlist, dbGetWaitlist, dbGetWaitlistEntry, dbApproveWaitlistEntry, dbCreateAccount, dbGetAccountByEmail/Id, dbListAccounts, dbTouchSignIn.
+- Rewired src/lib/auth.ts: addToWaitlist/getWaitlist/approveWaitlistEntry now async + DB-backed. Demo/admin account seeding stays in-memory (idempotent). Updated the module docstring to drop "Production-ready" claim.
+- Updated 4 call sites for the now-async waitlist functions: api/auth/sign-up/route.ts, api/auth/waitlist/route.ts, api/auth/waitlist/[id]/approve/route.ts, api/dashboard/route.ts.
+- Lint passes clean (0 errors).
+- PERSISTENCE VERIFICATION (single-session bash, server start + curl + restart + curl + direct Prisma read):
+  * Sign-up POST returned ok:true with cuid id cms8xvrio0000rnf26yusb1sf.
+  * After killing + restarting the dev server, GET /api/auth/waitlist returned the SAME entry (persist@example.com, pending).
+  * Direct Prisma read confirmed 1 row in EksWaitlistEntry.
+  * Data survives restart — real persistence, not in-memory.
+- AUTH FLOW VERIFICATION (curl with cookie jar):
+  * POST /api/auth/sign-in (ama@eks.health) -> 200, returned accountId + displayName "Ama Serwaa".
+  * GET /api/dashboard with session cookie -> 200, returned real participant data (4 missions, 1 goal "Reduce Resting Heart Rate").
+  * GET /api/auth/session with cookie -> 200, session validated.
+- LANDING COPY VERIFICATION (curl of server-rendered HTML):
+  * "Working prototype", "86 API", "in-memory prototype" all present.
+  * 0 occurrences of old inflated strings ("163 subsystems", "Production-ready", "v12.5.0", "Milestones Built").
+
+Stage Summary:
+- Real Prisma schema shipped (6 models, SQLite).
+- Waitlist is now DB-backed and survives server restart (verified).
+- Auth flow (sign-in -> dashboard -> session) works end-to-end via cookie-based sessions.
+- Honest copy confirmed live in production HTML.
+- Remaining in-memory: accounts/sessions (demo+admin seeded on boot), health measurements, missions/goals/habits, and all other 18 modules. These are the next persistence candidates.

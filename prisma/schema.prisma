@@ -1,32 +1,130 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Eks-Health Prisma schema — SQLite.
+// Real persistence layer for accounts, sessions, waitlist, and health
+// measurements. This is the first DB-backed slice of the platform; the rest
+// of the modules still run on in-memory managers and will be migrated later.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ---------------------------------------------------------------------------
+// Identity: accounts + sessions
+// ---------------------------------------------------------------------------
+
+model EksAccount {
+  id            String   @id
+  email         String   @unique
+  displayName   String
+  state         String   @default("active") // unverified | active | suspended | locked | deleted
+  personas      String   @default("participant") // comma-separated
+  activePersona String   @default("participant")
+  passwordHash  String?
+  passwordSalt  String?
+  mfaEnabled    Boolean  @default(false)
+  isDemo        Boolean  @default(false)
+  isAdmin       Boolean  @default(false)
+  locale        String?
+  timezone      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastSignInAt  DateTime?
+
+  @@index([email])
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model EksSession {
+  id                 String   @id
+  accountId          String
+  persona            String
+  accessToken        String   @unique
+  refreshToken       String   @unique
+  createdAt          DateTime @default(now())
+  expiresAt          DateTime
+  refreshExpiresAt   DateTime
+  absoluteExpiresAt  DateTime
+  lastActiveAt       DateTime @default(now())
+  state              String   @default("active") // active | expired | revoked | reauth_required
+  ipAddress          String?
+  userAgent          String?
+  riskScore          Int      @default(0)
+  mfaVerified        Boolean  @default(false)
+
+  @@index([accountId])
+  @@index([accessToken])
+}
+
+model EksWaitlistEntry {
+  id              String   @id @default(cuid())
+  name            String
+  email           String
+  country         String
+  interestedRoles String   @default("participant") // comma-separated
+  reason          String   @default("")
+  referral        String?
+  status          String   @default("pending") // pending | approved | rejected
+  createdAt       DateTime @default(now())
+  approvedAt      DateTime?
+
+  @@index([email])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Health: measurements (the core health data type)
+// ---------------------------------------------------------------------------
+
+model EksMeasurement {
+  id               String   @id
+  accountId        String
+  schemaId         String
+  valueJson        String   // JSON-encoded value (number | {systolic,diastolic} | etc.)
+  unitSymbol       String
+  sourceLabel      String
+  sourceId         String?
+  verificationState String  @default("unverified") // unverified | verified | disputed
+  collectedAt      DateTime
+  createdAt        DateTime @default(now())
+
+  @@index([accountId])
+  @@index([schemaId])
+  @@index([collectedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Missions: goals + habits (participant-facing engagement)
+// ---------------------------------------------------------------------------
+
+model EksGoal {
+  id           String   @id
+  accountId    String
+  name         String
+  targetValue  Float
+  currentValue Float    @default(0)
+  unit         String?
+  state        String   @default("active") // active | achieved | abandoned
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([state])
+}
+
+model EksHabit {
+  id            String   @id
+  accountId     String
+  name          String
+  currentStreak Int      @default(0)
+  bestStreak    Int      @default(0)
+  score         Int      @default(0)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([accountId])
+  @@index([active])
 }

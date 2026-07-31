@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const entry = addToWaitlist({
+  const entry = await addToWaitlist({
     name: body.name,
     email: body.email,
     country: body.country,

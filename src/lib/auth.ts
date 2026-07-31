@@ -1,10 +1,10 @@
 /**
  * Eks-Health Product Auth — Authentication Helper
  *
- * Production-ready authentication using the Identity Platform's
- * AccountManager + SessionManager. Cookie-based session persistence.
- * Supports: sign in, sign out, waitlist registration, role switching,
- * demo accounts, permanent admin.
+ * Cookie-based session persistence on top of the Identity Platform's
+ * AccountManager + SessionManager. The waitlist is DB-backed (Prisma/SQLite)
+ * so sign-ups survive server restart. Demo and admin accounts are seeded
+ * in-memory on first use.
  */
 
 import "server-only";
@@ -17,6 +17,12 @@ import {
   type Account,
 } from "@/identity";
 import { ensurePlatform } from "@/lib/platform-server";
+import {
+  dbAddToWaitlist,
+  dbGetWaitlist,
+  dbGetWaitlistEntry,
+  dbApproveWaitlistEntry,
+} from "@/lib/db-store";
 
 export interface AuthSession {
   accountId: string;
@@ -166,7 +172,7 @@ export function ensureDemoAccounts(): void {
   }
 }
 
-/** Waitlist entry (stored in memory until approved). */
+/** Waitlist entry (DB-backed). */
 export interface WaitlistEntry {
   id: string;
   name: string;
@@ -180,34 +186,25 @@ export interface WaitlistEntry {
   accountId?: string;
 }
 
-const waitlist: WaitlistEntry[] = [];
-
-export function addToWaitlist(input: {
+export async function addToWaitlist(input: {
   name: string;
   email: string;
   country: string;
   interestedRoles: string[];
   reason: string;
   referral?: string;
-}): WaitlistEntry {
-  const entry: WaitlistEntry = {
-    id: `wl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    ...input,
-    status: "pending",
-    createdAt: new Date().toISOString(),
-  };
-  waitlist.push(entry);
-  return entry;
+}): Promise<WaitlistEntry> {
+  return dbAddToWaitlist(input);
 }
 
-export function getWaitlist(): WaitlistEntry[] {
-  return [...waitlist];
+export async function getWaitlist(): Promise<WaitlistEntry[]> {
+  return dbGetWaitlist();
 }
 
-export function approveWaitlistEntry(id: string): WaitlistEntry | undefined {
-  const entry = waitlist.find((w) => w.id === id);
+export async function approveWaitlistEntry(id: string): Promise<WaitlistEntry | undefined> {
+  const entry = await dbGetWaitlistEntry(id);
   if (!entry) return undefined;
-  // Create an actual account
+  // Create an actual in-memory account (demo/admin seeding path).
   ensurePlatform();
   const accounts = getAccounts();
   let account = accounts.getByEmail(entry.email);
@@ -216,7 +213,7 @@ export function approveWaitlistEntry(id: string): WaitlistEntry | undefined {
       email: entry.email,
       password: "Welcome2Eks!",
       displayName: entry.name,
-      persona: entry.interestedRoles[0] as never ?? "participant",
+      persona: (entry.interestedRoles[0] as never) ?? "participant",
     });
     const token = accounts.issueVerificationToken(account.id, entry.email, "email");
     accounts.verifyToken(token);
@@ -224,7 +221,6 @@ export function approveWaitlistEntry(id: string): WaitlistEntry | undefined {
       accounts.addPersona(account.id, role as never);
     }
   }
-  entry.status = "approved";
-  entry.accountId = account.id;
-  return entry;
+  const updated = await dbApproveWaitlistEntry(id, account.id);
+  return updated ?? undefined;
 }

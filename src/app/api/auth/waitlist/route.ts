@@ -6,5 +6,6 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   ensurePlatform();
-  return NextResponse.json({ ok: true, data: getWaitlist() });
+  const waitlist = await getWaitlist();
+  return NextResponse.json({ ok: true, data: waitlist });
 }

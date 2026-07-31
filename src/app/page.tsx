@@ -51,7 +51,7 @@ export default function LandingPage() {
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[600px] bg-[var(--brand)]/10 rounded-full blur-[120px]" />
         <div className="relative max-w-5xl mx-auto text-center">
           <Badge variant="outline" className="mb-6 bg-[var(--brand-muted)]/50 border-[var(--brand)]/30 text-[var(--brand)]">
-            <Sparkles className="h-3 w-3 mr-1" /> 163 subsystems · 12 milestones · Production-ready
+            <Sparkles className="h-3 w-3 mr-1" /> Working prototype · 21 modules · 34 console sections · 86 API routes
           </Badge>
           <h1 className="text-4xl sm:text-6xl lg:text-7xl font-bold tracking-tight mb-6">
             Prevent disease<br />
@@ -73,10 +73,10 @@ export default function LandingPage() {
           {/* Stats bar */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 max-w-3xl mx-auto">
             {[
-              { value: "163", label: "Platform Subsystems" },
-              { value: "12", label: "Milestones Built" },
-              { value: "35+", label: "Console Sections" },
-              { value: "76+", label: "API Routes" },
+              { value: "21", label: "Platform Modules" },
+              { value: "34", label: "Console Sections" },
+              { value: "86", label: "API Routes" },
+              { value: "6", label: "Demo Roles" },
             ].map((s) => (
               <div key={s.label} className="text-center">
                 <p className="text-3xl font-bold text-[var(--brand)]">{s.value}</p>
@@ -152,38 +152,43 @@ export default function LandingPage() {
       {/* Platform Architecture */}
       <section className="py-20 px-4 sm:px-6 lg:px-8">
         <div className="max-w-5xl mx-auto">
-          <h2 className="text-3xl sm:text-4xl font-bold text-center mb-4">A true operating system for health</h2>
-          <p className="text-muted-foreground text-center max-w-2xl mx-auto mb-12">Not an app. Not a dashboard. A platform where the whole ecosystem delivers better outcomes than any individual Program could alone.</p>
+          <h2 className="text-3xl sm:text-4xl font-bold text-center mb-4">Built as a platform, not an app</h2>
+          <p className="text-muted-foreground text-center max-w-2xl mx-auto mb-12">A modular architecture where health Programs run on top of a shared kernel, identity, and data layer. These are the real modules shipping in this prototype today.</p>
           <div className="space-y-3">
             {[
-              { v: "v1.0", name: "Platform Kernel", desc: "Events, config, flags, scheduler, observability, storage, search, gateway, security, AI readiness", count: "16 subsystems" },
-              { v: "v2.0", name: "Identity Platform", desc: "Zero-trust identity, RBAC+ABAC+PBAC, consent, privacy, audit, monitoring, compliance", count: "15 subsystems" },
-              { v: "v3.0", name: "Program Operating System", desc: "Manifests, capabilities, sandbox, certification, SDK, testing, marketplace readiness", count: "16 subsystems" },
-              { v: "v4.0", name: "Universal Health Data", desc: "Schemas, units, measurements, evidence, verification, provenance, timeline, interop", count: "17 subsystems" },
-              { v: "v5.0", name: "Technician Network", desc: "Profiles, certifications, sessions, discovery, reputation, devices, chain-of-custody, fraud", count: "14 subsystems" },
-              { v: "v6.0", name: "Competition Platform", desc: "Competitions, seasons, divisions, scoring, leaderboards, ranking, rewards, prize pools", count: "12 subsystems" },
-              { v: "v7.0", name: "Mission Engine & AI", desc: "Missions, goals, habits, plans, personalization, knowledge, AI runtime, workflows", count: "15 subsystems" },
-              { v: "v8.0", name: "Developer Platform", desc: "CLI, simulator, visual designer, workflow builder, debugger, inspector, API explorer", count: "10 subsystems" },
-              { v: "v9.0", name: "Health Marketplace", desc: "Discovery, AI matching, outcomes, evidence, comparison, monetization, reviews, analytics", count: "12 subsystems" },
-              { v: "v10.0", name: "Research & Intelligence", desc: "Consent, cohorts, privacy (k-anonymity), evidence, population, benchmarks, governance", count: "13 subsystems" },
-              { v: "v11.0", name: "Health Orchestrator", desc: "Digital Twin, scheduler, conflict resolution, workload balancer, AI coordinator, timeline", count: "11 subsystems" },
-              { v: "v12.0", name: "Population Platform", desc: "Organizations, hierarchy, membership, privacy firewall, funding, campaigns, org AI", count: "12 subsystems" },
+              { name: "kernel", desc: "Event bus, config, feature flags, scheduler, observability, storage, search, security" },
+              { name: "identity", desc: "Accounts, sessions, roles (RBAC+ABAC+PBAC), consent, privacy, audit, compliance" },
+              { name: "programs", desc: "Program manifests, capabilities, sandbox, certification, SDK, developer profiles" },
+              { name: "health", desc: "Measurement schemas, units, evidence, verification, provenance, timeline" },
+              { name: "technicians", desc: "Technician profiles, certifications, sessions, reputation, chain-of-custody" },
+              { name: "competitions", desc: "Competitions, seasons, divisions, scoring, leaderboards, ranking, prize pools" },
+              { name: "missions", desc: "Missions, goals, habits (streaks), adaptive plans, personalization, knowledge" },
+              { name: "marketplace", desc: "Discovery, AI matching, outcomes, comparison, monetization, reviews" },
+              { name: "research", desc: "Research consent, cohorts, privacy (k-anonymity), evidence, benchmarks, publications" },
+              { name: "orchestrator", desc: "Digital twin, cross-program scheduling, conflict resolution, unified timeline" },
+              { name: "population", desc: "Organizations, hierarchy, membership, privacy firewall, funding, campaigns" },
+              { name: "ai", desc: "AI runtime with safety layer, insight generation, coaching" },
+              { name: "social", desc: "Friends, teams, communities, messaging, activity feed" },
+              { name: "achievements", desc: "Badges, XP, levels" },
+              { name: "developer", desc: "Developer tooling, profiles, SDK access" },
+              { name: "reporting", desc: "Report generation" },
+              { name: "platform-api", desc: "Public platform API surface" },
             ].map((layer, i) => (
               <div key={layer.name} className="flex items-center gap-4 rounded-xl border border-border/60 p-4 hover:border-[var(--brand)]/30 transition-colors">
-                <div className={`flex h-12 w-12 items-center justify-center rounded-lg font-mono text-xs font-bold shrink-0 ${i === 11 ? "bg-[var(--brand)] text-[var(--brand-foreground)]" : "bg-muted"}`}>
-                  {layer.v}
+                <div className={`flex h-12 w-12 items-center justify-center rounded-lg font-mono text-xs font-bold shrink-0 ${i === 0 ? "bg-[var(--brand)] text-[var(--brand-foreground)]" : "bg-muted"}`}>
+                  {String(i + 1).padStart(2, "0")}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-sm">{layer.name}</h3>
-                    <Badge variant="outline" className="text-[10px]">{layer.count}</Badge>
-                  </div>
+                  <h3 className="font-semibold text-sm font-mono">{layer.name}</h3>
                   <p className="text-xs text-muted-foreground mt-0.5">{layer.desc}</p>
                 </div>
-                {i < 11 && <ChevronRight className="h-4 w-4 text-muted-foreground rotate-90" />}
+                {i < 16 && <ChevronRight className="h-4 w-4 text-muted-foreground rotate-90" />}
               </div>
             ))}
           </div>
+          <p className="text-center text-xs text-muted-foreground mt-8 max-w-2xl mx-auto">
+            Note: this is an in-memory prototype. Data is seeded on boot and resets when the server restarts. Database persistence is the next milestone.
+          </p>
         </div>
       </section>
 
@@ -216,7 +221,7 @@ export default function LandingPage() {
           <div className="flex items-center gap-4">
             <span>region af-west-1</span>
             <span>tz Africa/Accra</span>
-            <span>v12.5.0</span>
+            <span>prototype</span>
           </div>
         </div>
       </footer>
