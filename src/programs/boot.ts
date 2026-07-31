@@ -186,7 +186,7 @@ function ensureBooted() {
 
 let _seeded = false;
 
-export function seedProgramDemoData(): { programIds: ProgramId[]; developerId?: DeveloperId } {
+export async function seedProgramDemoData(): Promise<{ programIds: ProgramId[]; developerId?: DeveloperId }> {
   if (_seeded) return { programIds: [] };
   ensureBooted();
 
@@ -196,17 +196,25 @@ export function seedProgramDemoData(): { programIds: ProgramId[]; developerId?: 
   const signingKey = generateSigningKeyPair("demo-key-1");
   const programIds: ProgramId[] = [];
 
+  // Hydrate developer profiles from DB first; skip profile creation if already present.
+  await devMgr.hydrateFromDb();
+
   let developerId: DeveloperId;
   try {
-    const profile = devMgr.createProfile({
-      name: "Demo Developer",
-      email: "kwame@eks.health",
-      organization: "Eks-Health Labs",
-      bio: "Building preventive health programs on the Eks-Health platform.",
-      website: "https://eks.health",
-    });
-    developerId = profile.id;
-    devMgr.verify(profile.id, "platform-admin");
+    const existing = devMgr.listProfiles().find((p) => p.email === "kwame@eks.health");
+    if (existing) {
+      developerId = existing.id;
+    } else {
+      const profile = devMgr.createProfile({
+        name: "Demo Developer",
+        email: "kwame@eks.health",
+        organization: "Eks-Health Labs",
+        bio: "Building preventive health programs on the Eks-Health platform.",
+        website: "https://eks.health",
+      });
+      developerId = profile.id;
+      devMgr.verify(profile.id, "platform-admin");
+    }
   } catch {
     developerId = asDeveloperId("dev_demo_1");
   }

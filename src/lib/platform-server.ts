@@ -239,10 +239,8 @@ export function ensurePlatform() {
     bootKernel();
     bootIdentity();
     bootPrograms();
-    seedProgramDemoData();
     bootHealth();
     bootTechnicians();
-    seedTechnicianDemoData();
     bootCompetitions();
     bootMissions();
     bootDeveloper();
@@ -272,7 +270,9 @@ export function ensureHydrated(): Promise<void> {
     _hydratePromise = (async () => {
       ensurePlatform();
       try {
+        await seedProgramDemoData();
         await seedHealthDemoData();
+        await seedTechnicianDemoData();
         await seedMissionDemoData();
         await seedCompetitionDemoData();
         await seedMarketplaceDemoData();

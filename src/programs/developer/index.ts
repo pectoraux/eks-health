@@ -30,6 +30,7 @@ import {
 } from "../core";
 import { getRegistry } from "../lifecycle";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Branded API-key ids
@@ -239,6 +240,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, profile);
+    void this._persist(id);
     this.byEmail.set(lowerEmail, id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.profileCreated, { developerId: id, name: input.name, email: lowerEmail }, {}, "domain"),
@@ -279,6 +281,7 @@ export class DeveloperManager {
       updatedAt: getClock().iso(),
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.profileUpdated, { developerId: id }, {}, "domain"),
     );
@@ -320,6 +323,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.verificationRequested, { developerId: id, documentCount: documents.length }, {}, "domain"),
     );
@@ -350,6 +354,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.verificationApproved, { developerId: id, verifiedBy }, {}, "domain"),
     );
@@ -386,6 +391,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.verificationRejected, { developerId: id, reason }, {}, "domain"),
     );
@@ -445,6 +451,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(developerId, updated);
+    void this._persist(developerId);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.publisherCreated, { publisherId: publisher.id, developerId, name: input.name }, {}, "domain"),
     );
@@ -506,6 +513,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(developerId, next);
+    void this._persist(developerId);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.apiKeyGenerated, { developerId, keyId: record.id, label }, {}, "domain"),
     );
@@ -534,6 +542,7 @@ export class DeveloperManager {
         const nextApiKeys = [...profile.apiKeys];
         nextApiKeys[idx] = revoked;
         this.profiles.set(devId, { ...profile, apiKeys: nextApiKeys, updatedAt: getClock().iso() });
+        void this._persist(devId);
         break;
       }
     }
@@ -638,6 +647,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.developerSuspended, { developerId: id, reason }, {}, "domain"),
     );
@@ -670,6 +680,7 @@ export class DeveloperManager {
       updatedAt: now,
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.developerBanned, { developerId: id, reason }, {}, "domain"),
     );
@@ -695,6 +706,7 @@ export class DeveloperManager {
       updatedAt: getClock().iso(),
     };
     this.profiles.set(id, next);
+    void this._persist(id);
     void getEventBus().publish(
       buildEvent(DEVELOPER_EVENTS.profileUpdated, { developerId: id, change: "reactivated" }, {}, "domain"),
     );
@@ -712,6 +724,66 @@ export class DeveloperManager {
       });
     }
     return p;
+  }
+
+  /** Per-ID promise chain to serialize concurrent write-behind calls. */
+  private readonly _persistChain = new Map<string, Promise<void>>();
+
+  /** Write-behind: upsert developer profile as JSON snapshot to EksDeveloper. */
+  private _persist(id: DeveloperId): Promise<void> {
+    const prev = this._persistChain.get(id) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this._doPersist(id));
+    this._persistChain.set(id, next);
+    void next.then(() => {
+      if (this._persistChain.get(id) === next) this._persistChain.delete(id);
+    });
+    return next;
+  }
+
+  private async _doPersist(id: DeveloperId): Promise<void> {
+    const p = this.profiles.get(id);
+    if (!p) return;
+    try {
+      await db.eksDeveloper.upsert({
+        where: { id },
+        create: {
+          id: p.id,
+          email: p.email,
+          dataJson: JSON.stringify(p),
+          verified: p.verification.status === "verified",
+          createdAt: new Date(p.createdAt),
+        },
+        update: {
+          dataJson: JSON.stringify(p),
+          verified: p.verification.status === "verified",
+        },
+      });
+    } catch (err) {
+      console.error("[developer] DB write-behind failed for", p.id, err);
+    }
+  }
+
+  /** Hydrate developer profiles from DB. Rebuilds byEmail index. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksDeveloper.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.profiles.has(row.id as DeveloperId)) continue;
+        try {
+          const p = JSON.parse(row.dataJson) as DeveloperProfile;
+          this.profiles.set(p.id, p);
+          this.byEmail.set(p.email, p.id);
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[developer] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

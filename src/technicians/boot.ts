@@ -174,7 +174,7 @@ function ensureBooted() {
 
 let _seeded = false;
 
-export function seedTechnicianDemoData(): { technicianIds: TechnicianId[] } {
+export async function seedTechnicianDemoData(): Promise<{ technicianIds: TechnicianId[] }> {
   if (_seeded) return { technicianIds: [] };
   ensureBooted();
 
@@ -184,6 +184,13 @@ export function seedTechnicianDemoData(): { technicianIds: TechnicianId[] } {
   const devices = getDevices();
   const programId = asProgramId("prg_cardio_care");
   const technicianIds: TechnicianId[] = [];
+
+  // Hydrate technician sessions from DB first; skip demo seeding if already present.
+  await getSessions().hydrateFromDb();
+  if (getSessions().list().length > 0) {
+    _seeded = true;
+    return { technicianIds: [] };
+  }
 
   // Register an accreditation authority
   let authorityId: string;

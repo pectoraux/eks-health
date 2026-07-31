@@ -35,6 +35,7 @@ import {
 } from "../core";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
 import { getTechnicians } from "../profiles";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Signature & location
@@ -270,6 +271,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -288,6 +290,7 @@ export class SessionManager {
       updatedAt: now,
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     if (updated.status !== session.status) {
       this.pushHistory(id, session.status, updated.status, now, actor, "evidence captured");
     }
@@ -339,6 +342,7 @@ export class SessionManager {
       updatedAt: now,
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     this.pushHistory(id, session.status, "technician_signed", now, technicianAccountId, "technician signature");
     void getEventBus().publish(
       buildEvent(
@@ -387,6 +391,7 @@ export class SessionManager {
       updatedAt: now,
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     this.pushHistory(id, session.status, "participant_confirmed", now, participantAccountId, "participant confirmation");
     void getEventBus().publish(
       buildEvent(
@@ -511,6 +516,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -523,6 +529,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -534,6 +541,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -545,6 +553,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -558,6 +567,7 @@ export class SessionManager {
       updatedAt: getClock().iso(),
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -647,6 +657,7 @@ export class SessionManager {
       updatedAt: now,
     };
     this.sessions.set(id, updated);
+    void this._persist(id);
     this.pushHistory(id, session.status, toStatus, now, opts.actor, opts.reason);
     return updated;
   }
@@ -751,6 +762,82 @@ export class SessionManager {
       }).sort(),
     );
     return createHash("sha256").update(canonical).digest("hex");
+  }
+
+  /** Per-ID promise chain to serialize concurrent write-behind calls. */
+  private readonly _persistChain = new Map<string, Promise<void>>();
+
+  /** Write-behind: upsert session as JSON snapshot to EksTechSession. */
+  private _persist(id: SessionId): Promise<void> {
+    const prev = this._persistChain.get(id) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this._doPersist(id));
+    this._persistChain.set(id, next);
+    void next.then(() => {
+      if (this._persistChain.get(id) === next) this._persistChain.delete(id);
+    });
+    return next;
+  }
+
+  private async _doPersist(id: SessionId): Promise<void> {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    try {
+      await db.eksTechSession.upsert({
+        where: { id },
+        create: {
+          id: s.id,
+          technicianId: s.technicianId ?? null,
+          participantId: s.participantId ?? null,
+          programId: s.programId ?? null,
+          dataJson: JSON.stringify(s),
+          state: s.state,
+          createdAt: new Date(s.scheduledAt),
+        },
+        update: {
+          dataJson: JSON.stringify(s),
+          state: s.state,
+        },
+      });
+    } catch (err) {
+      console.error("[tech-sessions] DB write-behind failed for", s.id, err);
+    }
+  }
+
+  /** Hydrate sessions from DB. Rebuilds all indexes. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksTechSession.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.sessions.has(row.id as SessionId)) continue;
+        try {
+          const s = JSON.parse(row.dataJson) as MeasurementSession;
+          this.sessions.set(s.id, s);
+          if (s.participantId) {
+            const list = this.byParticipant.get(s.participantId) ?? [];
+            this.byParticipant.set(s.participantId, [...list, s.id]);
+          }
+          if (s.technicianId) {
+            const list = this.byTechnician.get(s.technicianId) ?? [];
+            this.byTechnician.set(s.technicianId, [...list, s.id]);
+          }
+          if (s.programId) {
+            const list = this.byProgram.get(s.programId) ?? [];
+            this.byProgram.set(s.programId, [...list, s.id]);
+          }
+          if (s.appointmentId) {
+            this.byAppointment.set(s.appointmentId, s.id);
+          }
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[tech-sessions] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

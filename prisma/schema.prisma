@@ -143,3 +143,27 @@ model EksListing {
   @@index([status])
   @@index([developerId])
 }
+
+model EksDeveloper {
+  id        String   @id
+  email     String   @unique
+  dataJson  String   // full DeveloperProfile object as JSON snapshot
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model EksTechSession {
+  id            String   @id
+  technicianId  String?
+  participantId String?
+  programId     String?
+  dataJson      String   // full MeasurementSession object as JSON snapshot
+  state         String   @default("scheduled")
+  createdAt     DateTime @default(now())
+
+  @@index([technicianId])
+  @@index([participantId])
+  @@index([state])
+}
