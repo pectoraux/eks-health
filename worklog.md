@@ -2076,3 +2076,27 @@ Stage Summary:
 - All race conditions fixed: concurrent request mutex, per-ID write serialization, sync-seed removal.
 - Zero write-behind errors. Zero duplicates across all tables.
 - Remaining in-memory: missions (ephemeral), marketplace listings, technician sessions, developer profiles, research cohorts, organizations, and ~10 other modules.
+
+---
+Task ID: prod-7
+Agent: main (claude)
+Task: Migrate marketplace listings to DB-backed write-behind + hydration.
+
+Work Log:
+- Added EksListing model to prisma schema (id, slug unique, programId, developerId, dataJson, status, createdAt). Pushed schema.
+- Added db import + _persist (with per-ID promise chain) + hydrateFromDb to ListingRegistry (src/marketplace/profiles/index.ts). Write-behind hooked into all 8 mutation points: publish, update, addScreenshot, addVideo, addFAQ, addChangelog, incrementInstall, decrementInstall.
+- Made seedMarketplaceDemoData() async: hydrates from DB first, skips demo seeding if listings already exist.
+- Removed seedMarketplaceDemoData() from sync ensurePlatform(); added `await seedMarketplaceDemoData()` to ensureHydrated().
+- Updated marketplace listings API route to call `await ensureHydrated()`.
+- VERIFIED (fresh DB + restart):
+  * First boot: 5 listings persisted (Cardio Care, Sleep Optimizer, FitStreak, Mindful Daily, Nutrition Coach). 0 errors.
+  * After restart: 5 listings (not 10 — zero duplicates). 0 errors.
+  * All 8 data types now restart-safe: accounts, sessions, measurements, goals, habits, competitions, listings, waitlist.
+- UI verification via server-rendered HTML: landing page has honest copy ("Working prototype", "86 API", "in-memory prototype"), 0 inflated strings. Sign-in page renders all 6 roles. Marketplace API returns 5 listings.
+- Lint clean throughout.
+
+Stage Summary:
+- 8 data types now DB-backed and restart-safe: accounts, sessions, measurements, goals, habits, competitions, listings, waitlist.
+- 8 Prisma models total.
+- Zero write-behind errors. Zero duplicates across all tables.
+- Remaining in-memory: missions (ephemeral), developer profiles, technician sessions, research cohorts, organizations, and ~10 other modules.

@@ -22,6 +22,7 @@ import { getDiscovery } from "../discovery";
 import { getEvidence } from "../evidence";
 import { getOutcomes } from "../outcomes";
 import { getReviews } from "../reviews";
+import { db } from "@/lib/db";
 
 export interface PublishListingInput {
   programId: ProgramId;
@@ -107,6 +108,7 @@ export class ListingRegistry {
     (listing.solution as { listingId: ListingId }).listingId = listing.id;
 
     this.listings.set(listing.id, listing);
+    void this._persist(listing.id);
     this.byProgram.set(input.programId, listing.id);
     this.bySlug.set(slug, listing.id);
     getDiscovery().index_(listing);
@@ -142,6 +144,7 @@ export class ListingRegistry {
     if (!existing) throw new MarketplaceError({ code: "eks.marketplace.listing.not_found", category: "not_found", message: "Listing not found." });
     const updated = { ...existing, ...updates, updatedAt: getClock().iso() };
     this.listings.set(id, updated);
+    void this._persist(id);
     void getEventBus().publish(buildEvent(MARKETPLACE_EVENTS.programUpdated, { listingId: id }, {}, "domain"));
     return updated;
   }
@@ -162,36 +165,42 @@ export class ListingRegistry {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, screenshots: [...l.screenshots, url], updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   addVideo(id: ListingId, url: string): void {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, videos: [...l.videos, url], updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   addFAQ(id: ListingId, question: string, answer: string): void {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, faq: [...l.faq, { question, answer }], updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   addChangelog(id: ListingId, version: string, notes: string): void {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, changelog: [{ version, notes, date: getClock().iso() }, ...l.changelog], updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   incrementInstall(id: ListingId): void {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, installCount: l.installCount + 1, activeInstallCount: l.activeInstallCount + 1, updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   decrementInstall(id: ListingId): void {
     const l = this.listings.get(id);
     if (!l) return;
     this.listings.set(id, { ...l, activeInstallCount: Math.max(0, l.activeInstallCount - 1), updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   getFullProfile(id: ListingId): { listing: MarketplaceListing; evidence?: unknown; outcomes?: unknown; reviews?: unknown } | undefined {
@@ -216,6 +225,73 @@ export class ListingRegistry {
       totalInstalls: list.reduce((a, l) => a + l.installCount, 0),
       activeInstalls: list.reduce((a, l) => a + l.activeInstallCount, 0),
     };
+  }
+
+  /** Per-ID promise chain to serialize concurrent write-behind calls. */
+  private readonly _persistChain = new Map<string, Promise<void>>();
+
+  /** Write-behind: upsert listing as JSON snapshot to EksListing. */
+  private _persist(id: ListingId): Promise<void> {
+    const prev = this._persistChain.get(id) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this._doPersist(id));
+    this._persistChain.set(id, next);
+    void next.then(() => {
+      if (this._persistChain.get(id) === next) this._persistChain.delete(id);
+    });
+    return next;
+  }
+
+  private async _doPersist(id: ListingId): Promise<void> {
+    const l = this.listings.get(id);
+    if (!l) return;
+    const slug = l.solution.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    try {
+      await db.eksListing.upsert({
+        where: { id },
+        create: {
+          id: l.id,
+          slug,
+          programId: l.programId,
+          developerId: l.developerId ?? null,
+          dataJson: JSON.stringify(l),
+          status: l.status,
+          createdAt: new Date(l.createdAt),
+        },
+        update: {
+          dataJson: JSON.stringify(l),
+          status: l.status,
+          developerId: l.developerId ?? null,
+        },
+      });
+    } catch (err) {
+      console.error("[marketplace] DB write-behind failed for", l.id, err);
+    }
+  }
+
+  /** Hydrate listings from DB. Rebuilds byProgram/bySlug indexes. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksListing.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.listings.has(row.id as ListingId)) continue;
+        try {
+          const l = JSON.parse(row.dataJson) as MarketplaceListing;
+          this.listings.set(l.id, l);
+          this.byProgram.set(l.programId, l.id);
+          const slug = l.solution.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+          this.bySlug.set(slug, l.id);
+          try { getDiscovery().index_(l); } catch { /* discovery may not be ready */ }
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[marketplace] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

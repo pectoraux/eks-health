@@ -129,3 +129,17 @@ model EksCompetition {
   @@index([programId])
   @@index([state])
 }
+
+model EksListing {
+  id         String   @id
+  slug       String   @unique
+  programId  String
+  developerId String?
+  dataJson   String   // full MarketplaceListing object as JSON snapshot
+  status     String   @default("draft")
+  createdAt  DateTime @default(now())
+
+  @@index([programId])
+  @@index([status])
+  @@index([developerId])
+}

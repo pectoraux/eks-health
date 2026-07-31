@@ -73,9 +73,15 @@ export function marketplaceSnapshot() {
 }
 
 let _seeded = false;
-export function seedMarketplaceDemoData(): void {
+export async function seedMarketplaceDemoData(): Promise<void> {
   if (_seeded) return; if (!_booted) bootMarketplace();
   const profiles = getProfiles();
+  // Hydrate listings from DB first; skip demo seeding if already present.
+  await profiles.hydrateFromDb();
+  if (profiles.list().length > 0) {
+    _seeded = true;
+    return;
+  }
   // Get all program IDs from the registry
   const allPrograms = getProgramRegistry().list();
   const findProgramId = (slug: string): ProgramId => {

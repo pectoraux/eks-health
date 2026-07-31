@@ -1,8 +1,9 @@
-import { withPlatform, getListingRegistry, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getListingRegistry, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 export const dynamic = "force-dynamic";
 export function GET() {
-  return withPlatform(() => {
+  return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const profiles = getListingRegistry();
     return {
       listings: profiles.list({ status: "published" }).map((l) => ({

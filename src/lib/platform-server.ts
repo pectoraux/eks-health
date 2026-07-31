@@ -248,7 +248,6 @@ export function ensurePlatform() {
     bootDeveloper();
     seedDeveloperDemoData();
     bootMarketplace();
-    seedMarketplaceDemoData();
     bootResearch();
     seedResearchDemoData();
     bootOrchestrator();
@@ -276,6 +275,7 @@ export function ensureHydrated(): Promise<void> {
         await seedHealthDemoData();
         await seedMissionDemoData();
         await seedCompetitionDemoData();
+        await seedMarketplaceDemoData();
       } catch (err) {
         console.error("[platform] hydration failed:", err);
       }
