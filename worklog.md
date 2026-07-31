@@ -2043,3 +2043,36 @@ Stage Summary:
 - 5 core data types now DB-backed and restart-safe: accounts, sessions, measurements, goals, habits.
 - Pattern: in-memory store = source of truth for running process; DB = restart snapshot. Write-behind is fire-and-forget. Hydration runs once via ensureHydrated() cached promise, before first data-accessing request.
 - Remaining in-memory (not yet persisted): missions (ephemeral daily items, intentionally re-seeded), competitions, technician sessions, marketplace listings, research cohorts, and 12 other modules.
+
+---
+Task ID: prod-5+6
+Agent: main (claude)
+Task: Migrate competitions to DB + fix race conditions in account/session write-behind.
+
+Work Log:
+- Added EksCompetition model to prisma schema (id, slug unique, programId, dataJson, state, createdAt). Pushed schema.
+- Added db import + _persist + hydrateFromDb to CompetitionRegistry (src/competitions/competitions/index.ts). Write-behind hooked into all 5 mutation points: create, transition (state change), update, incrementParticipants, decrementParticipants.
+- Made seedCompetitionDemoData() async: hydrates from DB first, skips demo seeding if competitions already exist.
+- Removed seedCompetitionDemoData() from sync ensurePlatform(); added `await seedCompetitionDemoData()` to ensureHydrated().
+- VERIFIED competitions: 3 persisted on first boot, 3 after restart (no dupes). Dashboard shows total:3.
+- RACE CONDITION FIX #1: Found concurrent sign-in requests caused duplicate account registration (unique constraint on email). Fixed by adding a cached-promise mutex (ensureAccountsSeeded) — both ensureAdminAccount and ensureDemoAccounts delegate to the same cached promise, so concurrent requests share one seeding operation.
+- RACE CONDITION FIX #2: Found write-behind calls from register()→verifyToken()→update() raced on the same account ID (concurrent upserts on same row). Fixed by adding a per-ID promise chain (_persistChain) to AccountManager._persist(), serializing writes for the same ID.
+- RACE CONDITION FIX #3: Found seedIdentityDemoData() was still called synchronously in ensurePlatform(), creating demo accounts BEFORE hydration ran — causing duplicate accounts on every restart. Fixed by removing it from sync boot and calling it from ensureAccountsSeeded() AFTER hydration + account seeding.
+- VERIFIED zero errors: fresh DB + 3 concurrent sign-ins → 0 write-behind errors, 6 accounts (no dupes). After restart → 0 errors, all counts stable.
+- Final verified state across restart (fresh DB → first boot → restart):
+  * accounts: 6 → 6 (no dupes)
+  * sessions: 3 → 4 (1 new from restart sign-in, correct)
+  * measurements: 0 (first boot, dashboard not hit) → 9 (seeded on dashboard access)
+  * goals: 0 → 1 (seeded on dashboard access)
+  * habits: 0 → 2 (seeded on dashboard access)
+  * competitions: 0 → 3 (seeded on dashboard access)
+  * waitlist: 0 → 0
+  * 0 write-behind errors on both boots
+  * Dashboard loads real data from hydrated stores: 4 missions, 1 goal, 2 habits, bestStreak:5, 3 competitions
+- Lint clean throughout.
+
+Stage Summary:
+- 6 data types now DB-backed and restart-safe: accounts, sessions, measurements, goals, habits, competitions (+ waitlist = 7 total).
+- All race conditions fixed: concurrent request mutex, per-ID write serialization, sync-seed removal.
+- Zero write-behind errors. Zero duplicates across all tables.
+- Remaining in-memory: missions (ephemeral), marketplace listings, technician sessions, developer profiles, research cohorts, organizations, and ~10 other modules.

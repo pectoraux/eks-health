@@ -450,14 +450,29 @@ export class AccountManager {
     void this._persist(id);
   }
 
+  /** Per-ID promise chain to serialize concurrent write-behind calls. */
+  private readonly _persistChain = new Map<string, Promise<void>>();
+
   /**
    * Write-behind persistence: upsert the current in-memory account to the
    * EksAccount table. Fire-and-forget — the in-memory store remains the
    * source of truth for the running process; the DB row is a snapshot for
    * restart recovery. Errors are swallowed (logged to console) so a DB
-   * hiccup never breaks the in-memory flow.
+   * hiccup never breaks the in-memory flow. Calls for the same ID are
+   * serialized via a promise chain to avoid concurrent-upsert races.
    */
-  private async _persist(id: AccountId): Promise<void> {
+  private _persist(id: AccountId): Promise<void> {
+    const prev = this._persistChain.get(id) ?? Promise.resolve();
+    const next = prev.catch(() => {}).then(() => this._doPersist(id));
+    this._persistChain.set(id, next);
+    // Clean up the chain entry once settled to avoid unbounded growth.
+    void next.then(() => {
+      if (this._persistChain.get(id) === next) this._persistChain.delete(id);
+    });
+    return next;
+  }
+
+  private async _doPersist(id: AccountId): Promise<void> {
     const account = this.accounts.get(id);
     if (!account) return;
     try {

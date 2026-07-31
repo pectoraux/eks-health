@@ -238,14 +238,12 @@ export function ensurePlatform() {
   if (!_booted) {
     bootKernel();
     bootIdentity();
-    seedIdentityDemoData();
     bootPrograms();
     seedProgramDemoData();
     bootHealth();
     bootTechnicians();
     seedTechnicianDemoData();
     bootCompetitions();
-    seedCompetitionDemoData();
     bootMissions();
     bootDeveloper();
     seedDeveloperDemoData();
@@ -277,6 +275,7 @@ export function ensureHydrated(): Promise<void> {
       try {
         await seedHealthDemoData();
         await seedMissionDemoData();
+        await seedCompetitionDemoData();
       } catch (err) {
         console.error("[platform] hydration failed:", err);
       }

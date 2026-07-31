@@ -153,7 +153,7 @@ function ensureBooted() {
 
 let _seeded = false;
 
-export function seedCompetitionDemoData(): { competitionIds: CompetitionId[] } {
+export async function seedCompetitionDemoData(): Promise<{ competitionIds: CompetitionId[] }> {
   if (_seeded) return { competitionIds: [] };
   ensureBooted();
 
@@ -168,6 +168,13 @@ export function seedCompetitionDemoData(): { competitionIds: CompetitionId[] } {
   const programId = asProgramId("prg_cardio_care");
   const createdBy = asAccountId("acc_demo_1");
   const competitionIds: CompetitionId[] = [];
+
+  // Hydrate competitions from DB first; skip demo seeding if already present.
+  await comps.hydrateFromDb();
+  if (comps.list().length > 0) {
+    _seeded = true;
+    return { competitionIds: [] };
+  }
 
   // Define a score spec
   let specId: string;

@@ -117,3 +117,15 @@ model EksHabit {
   @@index([participantId])
   @@index([active])
 }
+
+model EksCompetition {
+  id         String   @id
+  slug       String   @unique
+  programId  String
+  dataJson   String   // full Competition object as JSON snapshot
+  state      String   @default("draft")
+  createdAt  DateTime @default(now())
+
+  @@index([programId])
+  @@index([state])
+}

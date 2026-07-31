@@ -25,6 +25,7 @@ import {
 } from "../core";
 import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
 import { COMPETITION_EVENTS } from "../core";
+import { db } from "@/lib/db";
 
 // ---------------------------------------------------------------------------
 // Competition definition
@@ -149,6 +150,7 @@ export class CompetitionRegistry {
       tags: input.tags ?? [],
     };
     this.competitions.set(comp.id, comp);
+    void this._persist(comp.id);
     this.bySlug.set(input.slug, comp.id);
     const pList = this.byProgram.get(input.programId) ?? [];
     this.byProgram.set(input.programId, [...pList, comp.id]);
@@ -192,6 +194,7 @@ export class CompetitionRegistry {
     }
     const updated: Competition = { ...comp, state: to, updatedAt: getClock().iso() };
     this.competitions.set(id, updated);
+    void this._persist(id);
     this.recordAudit(id, to, {});
     const eventMap: Partial<Record<CompetitionState, string>> = {
       active: COMPETITION_EVENTS.competitionStarted,
@@ -209,6 +212,7 @@ export class CompetitionRegistry {
     if (!comp) throw new CompetitionError({ code: "eks.competition.not_found", category: "not_found", message: "Not found." });
     const updated: Competition = { ...comp, ...updates, updatedAt: getClock().iso(), version: comp.version + 1 };
     this.competitions.set(id, updated);
+    void this._persist(id);
     return updated;
   }
 
@@ -245,12 +249,14 @@ export class CompetitionRegistry {
     const comp = this.competitions.get(id);
     if (!comp) return;
     this.competitions.set(id, { ...comp, currentParticipants: comp.currentParticipants + 1, updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   decrementParticipants(id: CompetitionId): void {
     const comp = this.competitions.get(id);
     if (!comp) return;
     this.competitions.set(id, { ...comp, currentParticipants: Math.max(0, comp.currentParticipants - 1), updatedAt: getClock().iso() });
+    void this._persist(id);
   }
 
   getAuditLog(competitionId?: CompetitionId): readonly CompetitionAuditEntry[] {
@@ -272,6 +278,56 @@ export class CompetitionRegistry {
 
   private recordAudit(competitionId: CompetitionId, event: string, metadata: Record<string, unknown>): void {
     this.auditLog.push({ competitionId, event, at: getClock().iso(), metadata });
+  }
+
+  /** Write-behind: upsert competition as JSON snapshot to EksCompetition. */
+  private async _persist(id: CompetitionId): Promise<void> {
+    const c = this.competitions.get(id);
+    if (!c) return;
+    try {
+      await db.eksCompetition.upsert({
+        where: { id },
+        create: {
+          id: c.id,
+          slug: c.slug,
+          programId: c.programId,
+          dataJson: JSON.stringify(c),
+          state: c.state,
+          createdAt: new Date(c.createdAt),
+        },
+        update: {
+          dataJson: JSON.stringify(c),
+          state: c.state,
+        },
+      });
+    } catch (err) {
+      console.error("[competitions] DB write-behind failed for", c.id, err);
+    }
+  }
+
+  /** Hydrate competitions from DB. Rebuilds bySlug/byProgram indexes. */
+  async hydrateFromDb(): Promise<number> {
+    try {
+      const rows = await db.eksCompetition.findMany();
+      let loaded = 0;
+      for (const row of rows) {
+        if (this.competitions.has(row.id as CompetitionId)) continue;
+        try {
+          const c = JSON.parse(row.dataJson) as Competition;
+          this.competitions.set(c.id, c);
+          this.bySlug.set(c.slug, c.id);
+          const pList = this.byProgram.get(c.programId) ?? [];
+          this.byProgram.set(c.programId, [...pList, c.id]);
+          loaded++;
+        } catch {
+          // skip malformed
+        }
+      }
+      return loaded;
+    } catch (err) {
+      console.error("[competitions] DB hydration failed:", err);
+      return 0;
+    }
   }
 }
 

@@ -105,12 +105,38 @@ export async function clearSessionCookies(): Promise<void> {
   cookieStore.delete(SESSION_COOKIE);
 }
 
+/** Cached promise to prevent concurrent seeding race conditions. */
+let _seedPromise: Promise<void> | null = null;
+
+/** Hydrate + seed admin + demo accounts. Idempotent via cached promise. */
+function ensureAccountsSeeded(): Promise<void> {
+  if (!_seedPromise) {
+    _seedPromise = (async () => {
+      ensurePlatform();
+      const accounts = getAccounts();
+      await accounts.hydrateFromDb();
+      await getSessions().hydrateFromDb();
+      await seedAdmin(accounts);
+      await seedDemo(accounts);
+      // Seed identity demo data (orgs, roles) now that accounts exist.
+      // This was previously called synchronously in ensurePlatform(), which
+      // raced with hydration and created duplicate accounts.
+      const { seedIdentityDemoData } = await import("@/identity");
+      seedIdentityDemoData();
+    })().catch((err) => {
+      _seedPromise = null; // allow retry on failure
+      throw err;
+    });
+  }
+  return _seedPromise;
+}
+
 /** Hydrate accounts from DB, then ensure the permanent admin account exists. */
 export async function ensureAdminAccount(): Promise<void> {
-  ensurePlatform();
-  const accounts = getAccounts();
-  await accounts.hydrateFromDb();
-  await getSessions().hydrateFromDb();
+  await ensureAccountsSeeded();
+}
+
+async function seedAdmin(accounts: ReturnType<typeof getAccounts>): Promise<void> {
   const adminEmail = "ekontetevi@gmail.com";
   const adminPassword = process.env.ADMIN_PASSWORD ?? "Payswap123456";
 
@@ -142,10 +168,10 @@ export async function ensureAdminAccount(): Promise<void> {
 
 /** Hydrate accounts from DB, then ensure demo accounts exist. */
 export async function ensureDemoAccounts(): Promise<void> {
-  ensurePlatform();
-  const accounts = getAccounts();
-  await accounts.hydrateFromDb();
-  await getSessions().hydrateFromDb();
+  await ensureAccountsSeeded();
+}
+
+async function seedDemo(accounts: ReturnType<typeof getAccounts>): Promise<void> {
   const demoAccounts = [
     { email: "ama@eks.health", name: "Ama Serwaa", persona: "participant" as const },
     { email: "clinic@eks.health", name: "Dr. Adwoa Boateng", persona: "health_technician" as const },
