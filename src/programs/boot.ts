@@ -200,7 +200,7 @@ export function seedProgramDemoData(): { programIds: ProgramId[]; developerId?: 
   try {
     const profile = devMgr.createProfile({
       name: "Demo Developer",
-      email: "dev@eks.health",
+      email: "kwame@eks.health",
       organization: "Eks-Health Labs",
       bio: "Building preventive health programs on the Eks-Health platform.",
       website: "https://eks.health",
@@ -253,7 +253,7 @@ export function seedProgramDemoData(): { programIds: ProgramId[]; developerId?: 
     try {
       const manifest = buildManifest({
         slug: d.slug, name: d.name, version: d.version, description: d.description,
-        category: d.category, developerId: developerId, developerName: "Demo Developer", developerEmail: "dev@eks.health",
+        category: d.category, developerId: developerId, developerName: "Demo Developer", developerEmail: "kwame@eks.health",
         capabilities: d.capabilities.map((c) => ({
           capability: c as never, reason: `Program requires ${c} capability to function.`,
           purposes: ["measurement", "profile"].includes(c) ? ["program_operation"] : undefined, scope: "self",

@@ -278,6 +278,31 @@ export function seedTechnicianDemoData(): { technicianIds: TechnicianId[] } {
     }
   }
 
+  // Seed demo session data and ratings for technicians
+  for (const techId of technicianIds) {
+    // Record some sessions
+    for (let i = 0; i < 15; i++) {
+      techs.recordSession(techId, true, false);
+    }
+    // Give them a rating
+    techs.updateRating(techId, 4.5 + Math.random() * 0.5, 10 + Math.floor(Math.random() * 20));
+    // Seed reputation
+    try {
+      const rep = getReputation();
+      const repProfile = rep.getOrCreate(techId);
+      // Record some feedback
+      rep.recordFeedback({
+        id: `fb_${techId.slice(-6)}`,
+        technicianId: techId,
+        fromParticipantId: asAccountId("acc_demo_1"),
+        rating: 5,
+        comment: "Excellent service, very professional.",
+        factors: { accuracy: 95, consistency: 90, participant_feedback: 92, verification_quality: 88, dispute_rate: 5, completion_rate: 95, response_time: 85 },
+        submittedAt: getClock().iso(),
+      });
+    } catch { /* ignore */ }
+  }
+
   _seeded = true;
   return { technicianIds };
 }

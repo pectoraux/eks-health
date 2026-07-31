@@ -1,4 +1,4 @@
-import { withPlatform, getHealthMeasurements, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getHealthMeasurements, getHealthSources, ensurePlatform } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
@@ -24,8 +24,19 @@ export function POST(req: Request) {
       schemaId?: string; profileId?: string; value?: unknown; unitId?: string;
       sourceId?: string; collectedBy?: string; tags?: string[];
     };
-    if (!body.schemaId || !body.profileId || body.value === undefined || !body.unitId || !body.sourceId) {
-      throw new Error("schemaId, profileId, value, unitId, sourceId required");
+    if (!body.schemaId || !body.profileId || body.value === undefined || !body.unitId) {
+      throw new Error("schemaId, profileId, value, unitId required");
+    }
+    // If no sourceId provided, or sourceId doesn't exist, use the first available source
+    let sourceId = body.sourceId;
+    if (!sourceId) {
+      const sources = getHealthSources().list();
+      if (sources.length > 0) {
+        sourceId = sources[0].id;
+      }
+    }
+    if (!sourceId) {
+      throw new Error("No measurement source available. Ensure health platform is seeded.");
     }
     const measurements = getHealthMeasurements();
     const m = measurements.record({
@@ -33,10 +44,10 @@ export function POST(req: Request) {
       profileId: body.profileId as never,
       value: body.value as never,
       unitId: body.unitId as never,
-      sourceId: body.sourceId as never,
+      sourceId: sourceId as never,
       provenance: {
         collectedBy: body.collectedBy as never,
-        sourceId: body.sourceId as never,
+        sourceId: sourceId as never,
         collectedAt: new Date().toISOString(),
         verificationHistory: [],
       },

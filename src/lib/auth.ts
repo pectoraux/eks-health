@@ -53,7 +53,7 @@ export async function getSession(): Promise<AuthSession | null> {
       sessionId: session.id,
       accessToken: session.accessToken,
       roles: account.personas,
-      isDemo: account.email.endsWith("@demo.eks.health"),
+      isDemo: account.email.endsWith("@eks.health"),
       isAdmin: account.email === "ekontetevi@gmail.com",
     };
   } catch {
@@ -137,11 +137,11 @@ export function ensureDemoAccounts(): void {
   ensurePlatform();
   const accounts = getAccounts();
   const demoAccounts = [
-    { email: "participant@demo.eks.health", name: "Ama Serwaa", persona: "participant" as const },
-    { email: "technician@demo.eks.health", name: "Dr. Adwoa Boateng", persona: "health_technician" as const },
-    { email: "developer@demo.eks.health", name: "Kwame Mensah", persona: "developer" as const },
-    { email: "researcher@demo.eks.health", name: "Prof. Yaw Asante", persona: "researcher" as const },
-    { email: "org-admin@demo.eks.health", name: "Org Administrator", persona: "org_admin" as const },
+    { email: "ama@eks.health", name: "Ama Serwaa", persona: "participant" as const },
+    { email: "clinic@eks.health", name: "Dr. Adwoa Boateng", persona: "health_technician" as const },
+    { email: "kwame@eks.health", name: "Kwame Mensah", persona: "developer" as const },
+    { email: "research@eks.health", name: "Prof. Yaw Asante", persona: "researcher" as const },
+    { email: "admin@eks.health", name: "Org Administrator", persona: "org_admin" as const },
   ];
 
   for (const d of demoAccounts) {

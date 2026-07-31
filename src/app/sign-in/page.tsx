@@ -9,11 +9,11 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const DEMO_ACCOUNTS = [
-  { email: "participant@demo.eks.health", label: "Participant", icon: "🏃", desc: "Track health, compete, earn rewards" },
-  { email: "technician@demo.eks.health", label: "Health Technician", icon: "🩺", desc: "Verify measurements, build reputation" },
-  { email: "developer@demo.eks.health", label: "Developer", icon: "💻", desc: "Build and publish health Programs" },
-  { email: "researcher@demo.eks.health", label: "Researcher", icon: "🔬", desc: "Analyze populations, publish findings" },
-  { email: "org-admin@demo.eks.health", label: "Org Admin", icon: "🏢", desc: "Manage population wellness" },
+  { email: "ama@eks.health", label: "Participant", icon: "🏃", desc: "Track health, compete, earn rewards" },
+  { email: "clinic@eks.health", label: "Health Technician", icon: "🩺", desc: "Verify measurements, build reputation" },
+  { email: "kwame@eks.health", label: "Developer", icon: "💻", desc: "Build and publish health Programs" },
+  { email: "research@eks.health", label: "Researcher", icon: "🔬", desc: "Analyze populations, publish findings" },
+  { email: "admin@eks.health", label: "Org Admin", icon: "🏢", desc: "Manage population wellness" },
   { email: "ekontetevi@gmail.com", label: "Platform Admin", icon: "⚙️", desc: "Full platform administration" },
 ];
 
