@@ -198,38 +198,19 @@ interface InstallationManager {
   listAll?(): InstallationLite[];
 }
 
-async function fetchInstallationManager(): Promise<InstallationManager | undefined> {
-  const candidates = ["../installation", "../installations"];
-  for (const path of candidates) {
-    try {
-      const mod = (await import(path)) as {
-        getInstallations?: () => unknown;
-        getInstallationManager?: () => unknown;
-      };
-      const accessor = mod?.getInstallations ?? mod?.getInstallationManager;
-      const mgr = accessor?.() as InstallationManager | undefined;
-      if (mgr) return mgr;
-    } catch {
-      /* try next candidate */
-    }
-  }
+// NOTE: Installation tracking is not yet implemented in the marketplace
+// subsystem. These helpers return empty results rather than performing
+// speculative dynamic imports against modules that do not exist. When an
+// installation manager is added, wire it up here.
+function fetchInstallationManager(): InstallationManager | undefined {
   return undefined;
 }
 
-async function fetchInstallationsForListing(listingId: ListingId): Promise<InstallationLite[]> {
-  const mgr = await fetchInstallationManager();
-  if (!mgr) return [];
-  if (mgr.listByListing) return mgr.listByListing(listingId) ?? [];
-  if (mgr.list) return mgr.list({ listingId }) ?? [];
-  if (mgr.listAll) return (mgr.listAll() ?? []).filter((i) => i.listingId === listingId);
+function fetchInstallationsForListing(_listingId: ListingId): InstallationLite[] {
   return [];
 }
 
-async function fetchAllInstallations(): Promise<InstallationLite[]> {
-  const mgr = await fetchInstallationManager();
-  if (!mgr) return [];
-  if (mgr.listAll) return mgr.listAll() ?? [];
-  if (mgr.list) return mgr.list() ?? [];
+function fetchAllInstallations(): InstallationLite[] {
   return [];
 }
 

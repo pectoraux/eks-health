@@ -151,31 +151,12 @@ interface InstallationManager {
   getByParticipant?(participantId: AccountId): InstallationLite[];
 }
 
-async function fetchParticipantInstallations(participantId: AccountId): Promise<InstallationLite[]> {
-  try {
-    // The installation manager is expected to live at ../installation or be
-    // surfaced via a future marketplace boot. Both paths are tried.
-    const candidates: string[] = ["../installation", "../installations"];
-    for (const path of candidates) {
-      try {
-        const mod = (await import(path)) as {
-          getInstallations?: () => unknown;
-          getInstallationManager?: () => unknown;
-        };
-        const accessor = mod?.getInstallations ?? mod?.getInstallationManager;
-        const mgr = accessor?.() as InstallationManager | undefined;
-        if (!mgr) continue;
-        if (mgr.listByParticipant) return mgr.listByParticipant(participantId) ?? [];
-        if (mgr.list) return mgr.list({ participantId }) ?? [];
-        if (mgr.getByParticipant) return mgr.getByParticipant(participantId) ?? [];
-      } catch {
-        /* try next candidate */
-      }
-    }
-    return [];
-  } catch {
-    return [];
-  }
+// NOTE: Installation tracking is not yet implemented in the marketplace
+// subsystem. Returns an empty list rather than performing speculative dynamic
+// imports against modules that do not exist. Wire up a real installation
+// manager here when one is added.
+function fetchParticipantInstallations(_participantId: AccountId): InstallationLite[] {
+  return [];
 }
 
 interface PlatformListingLite {
