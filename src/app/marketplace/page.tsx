@@ -9,7 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
 interface Listing {
-  id: string; name: string; tagline: string; category: string;
+  id: string; slug?: string; name: string; tagline: string; category: string;
   bodySystems: string[]; healthGoals: string[];
   developerName: string; pricing: { type: string; price?: number };
   supportedCountries: string[]; installCount: number; version: string;

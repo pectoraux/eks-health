@@ -13,6 +13,7 @@ import { toast } from "@/hooks/use-toast";
 
 interface Listing {
   id: string;
+  slug?: string;
   name: string;
   tagline: string;
   category: string;
@@ -43,8 +44,14 @@ export default function ProgramDetailPage() {
       fetch("/api/auth/session", { cache: "no-store" }).then(r => r.json()),
     ]).then(([d, sess]) => {
       if (d.ok) {
-        const found = (d.data.listings ?? []).find((l: Listing) => l.id === id || l.name?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === id);
+        const listings = d.data.listings ?? [];
+        const found = listings.find((l: Listing) =>
+          l.id === id ||
+          l.slug === id ||
+          l.name?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === id
+        );
         setListing(found || null);
+        if (!found) console.warn("Program not found. Searched for:", id, "in listings:", listings.map(l => ({ id: l.id, slug: l.slug, name: l.name })));
       }
       if (sess.ok && sess.data) setSignedIn(true);
       setLoading(false);
