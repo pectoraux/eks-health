@@ -2534,3 +2534,39 @@ Stage Summary:
 - All navigation flows work on live site.
 - 0 lint errors, 0 browser errors.
 - Live URL: https://eks-health.vercel.app
+
+---
+Task ID: fix-coldstart-1
+Agent: main (claude)
+Task: Fix serverless cold-start resilience — retry logic + error states.
+
+Root Cause (confirmed by re-audit):
+- ensureHydrated() cached a failed promise forever → permanently blinded that instance
+- Parallel fetches in dashboard could hit cold instances → 401 → empty body
+- No retry logic anywhere → transient failures became permanent UX failures
+
+Fixes Applied:
+1. ensureHydrated(): reset _hydratePromise on failure so next call retries (was caching failures forever)
+2. getSession(): catch hydration failure, still try in-memory validation (don't block on DB)
+3. Dashboard fetchData(): retry /api/dashboard up to 3 times with 500ms delay (handles cold-start races)
+4. Dashboard: show error state with Retry button instead of silently rendering empty body
+5. Dashboard switchRole(): 300ms delay before re-fetch (lets DB write-behind persist persona change)
+6. Program install: retry up to 3 times, show toast instead of redirecting to /sign-in on 401
+7. Marketplace page: retry session check 3 times with 300ms delay, show "Dashboard" button when signed in
+
+VERIFIED ON LIVE SITE (https://eks-health.vercel.app):
+- All 6 roles: session True, dashboard True with correct persona ✅
+- Participant dashboard: 4 Complete buttons, 1 Update, 3 Join Competition, 1 Record ✅
+- Dashboard → Marketplace: shows "Dashboard" button (logged in) ✅
+- Marketplace → Program detail: renders "Cardio Care" with install button ✅
+- Program detail (direct URL): renders correctly ✅
+- Habit check-in: ok, streak: 3 ✅
+- Program install: ok, installs: 2 ✅
+- Session consistency: 3/3 session checks return data ✅
+- Zero browser console errors ✅
+
+Stage Summary:
+- 7 fixes for serverless cold-start resilience
+- All 6 roles work, all navigation flows work, all interactive actions work
+- 0 lint errors, 0 browser errors
+- Live URL: https://eks-health.vercel.app
