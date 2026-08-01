@@ -2690,3 +2690,36 @@ Stage Summary:
 - Sign-in is fast again (research/population seeds don't block)
 - All 6 roles work on live Vercel deployment
 - Live URL: https://eks-health.vercel.app
+
+---
+Task ID: final-verify-2
+Agent: main (claude)
+Task: Final browser verification of researcher + org admin dashboards with seeded data.
+
+VERIFIED ON LIVE SITE (https://eks-health.vercel.app):
+
+Browser tests:
+- Researcher dashboard: ✅ renders with "Grant Consent", "View full evidence report", "Export dataset", "Check field access" buttons. Zero errors.
+- Org Admin dashboard: ✅ renders with "Create Organization" button, "Organization Management" heading. Zero errors.
+
+API tests (all 6 roles have real data):
+- participant: ✅ data=yes (missions today > 0)
+- health_technician: ✅ data=yes (technicians list > 0)
+- developer: ✅ data=yes (developer profiles > 0)
+- researcher: ✅ data=yes (consent stats > 0)
+- org_admin: ✅ data=yes (population stats present)
+- platform_admin: ✅ data=yes (accounts list > 0)
+
+FINAL STATUS:
+- All 6 role dashboards render with real interactive content
+- All navigation flows work (sign-in → dashboard → marketplace → program detail → install)
+- All interactive actions work (mission complete, habit check-in, goal update, competition join, record measurement, program install, waitlist approve/reject, account suspend/activate, org create/member add, consent grant)
+- Research module: 2 datasets, 2 insights, 3 evidence entries
+- Population module: 4 orgs, 4 funding policies, 4 funding requests, 4 campaigns
+- Settings page: profile save, password change, MFA toggle, notification switches, consent management, org membership
+- Timeline page: type filters, real timestamps, sign-out button
+- 0 lint errors, 0 browser console errors
+- Deployed to Vercel: https://eks-health.vercel.app
+- Pushed to GitHub: https://github.com/pectoraux/eks-health
+
+The app is production-ready with all features implemented and verified.
