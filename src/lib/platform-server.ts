@@ -282,7 +282,13 @@ export function ensureHydrated(): Promise<void> {
         await seedCompetitionDemoData();
         await seedMarketplaceDemoData();
       } catch (err) {
-        console.error("[platform] hydration failed:", err);
+        // CRITICAL: reset the promise so the next call retries.
+        // If we don't do this, a transient DB error permanently blinds
+        // this serverless instance — all subsequent getSession() calls
+        // will return null (cached failed promise resolves to nothing).
+        _hydratePromise = null;
+        console.error("[platform] hydration failed (will retry on next call):", err);
+        throw err;
       }
     })();
   }

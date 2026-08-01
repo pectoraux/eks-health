@@ -44,7 +44,13 @@ const ACCESS_COOKIE = "eks_access";
 export async function getSession(): Promise<AuthSession | null> {
   ensurePlatform();
   // Ensure DB-backed sessions + accounts are hydrated (critical for serverless).
-  await ensureHydrated();
+  // If hydration fails (transient DB error), still try to validate — the
+  // in-memory store may have data from the current instance's seeding.
+  try {
+    await ensureHydrated();
+  } catch {
+    // Hydration failed but don't block the request — try in-memory validation.
+  }
   const cookieStore = await cookies();
   const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
   if (!accessToken) return null;

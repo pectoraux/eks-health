@@ -1,0 +1,23 @@
+[T2] Sign-in/dashboard failed: url=https://eks-health.vercel.app/dashboard, welcome=yes, complete_btns=0, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+[T3] Dashboard→Marketplace failed: url=https://eks-health.vercel.app/marketplace, cards=5, dash_btn=no, session=200|1|{\ok\:true,\data\:null}
+[T8] Role switch session null: pre=200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\health_technician\,\de, post=200|1|{\ok\:true,\data\:null}
+[T9] Back nav redirected to /sign-in: url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+[T12a] Mission Complete click had no effect: before=0, after=0, done_visible=no
+[T12b] Habit + click had no effect: before=none, after=none, click=none
+[T12c] Record dialog did not open with form: before=0, after=0, form=no
+[T13] Install failed: success=no, dash_btn=no, checkmark=0, url=https://eks-health.vercel.app/sign-in
+[T14/Participant] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yfu83cd02pdl8gl8z16t9\,\a
+[T14/Technician] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xfflnaqzv0yadl0p25uyj\,\email\:\clinic@eks.health\,\displayName\:\Dr. Adwoa Boateng\,\activePersona\:\health_technician\,\personas\:[\health_technician\],\sessionId\:\ses_0ms9yg5
+[T14/Developer] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffnp4m00naj1giibva07\,\email\:\kwame@eks.health\,\displayName\:\Kwame Mensah\,\activePersona\:\developer\,\personas\:[\developer\],\sessionId\:\ses_0ms9ygh8cb9ey3cczy0fwxmnv\,\a
+[T14/Researcher] Dashboard incomplete: welcome=yes, body=185, url=https://eks-health.vercel.app/dashboard
+[T14/Org Admin] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffrmf97gebohb0rt7mcd\,\email\:\admin@eks.health\,\displayName\:\Org Administrator\,\activePersona\:\org_admin\,\personas\:[\org_admin\],\sessionId\:\ses_0ms9yh48kkesrf2cc34c9zin
+[T14/Platform Admin] Dashboard incomplete: welcome=yes, body=303, url=https://eks-health.vercel.app/dashboard
+[T2-retest] Dashboard partial: api_ok=1, missions=no, habits=no, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+[T3-retest] Marketplace header ambiguous: signin=no, dashboard=no, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+[T8-retest] Role switch did not change persona: pre=platform_admin, post=platform_admin, clicked=Health Technician
+[T13] Install failed: success=no, dash_btn=no, btn_state=, url=https://eks-health.vercel.app/sign-in
+[T14/Participant] Dashboard missing role content: welcome=yes, body=176, dash_api=200|1|{\persona\:\participant\,\displayName\:\Ama Serwaa\,\email\:\ama@eks.health\,\missions\:{\stats\:{\total\:4,\active\:4,\completed\:0,\skipped\:0,\expired\:0,\completionRate\:0,\byCategory\:{\activity\
+[T14/Technician] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xfflnaqzv0yadl0p25uyj\,\email\:\clinic@eks.health\,\displayName\:\Dr. Adwoa Boateng\,\activePersona\:\health_technician\,\personas\:[\health_technician\],\sessionId\:\ses_0ms9yl8, dash=200|1|{\persona\:\health_technician\,\displayName\:\Dr. Adwoa Boateng\,\email\:\clinic@eks.health\,\technicians\:{\stats\:{\total\:3,\active\:3,\suspended\:0,\byCategory\:{\individual\:2,\mobile\:1},\totalS
+[T14/Researcher] Dashboard short body: body=185, dash_api=200|1|{\persona\:\researcher\,\displayName\:\Prof. Yaw Asante\,\email\:\research@eks.health\,\research\:{\consentStats\:{\total\:3,\active\:3,\revoked\:0,\expired\:0,\byType\:{\anonymous_research\:1,\progra
+[T14/Org Admin] Dashboard short body: body=199, dash_api=200|1|{\persona\:\org_admin\,\displayName\:\Org Administrator\,\email\:\admin@eks.health\,\population\:{\stats\:{\totalQueries\:3,\byMethod\:{\getStats\:3}}}}
+[T14/Platform Admin] Dashboard short body: body=303, dash_api=200|1|{\persona\:\platform_admin\,\displayName\:\Platform Administrator\,\email\:\ekontetevi@gmail.com\,\platform\:{\accounts\:[{\id\:\acc_0ms9xffpmpoqf222fy3nrr4tb\,\email\:\research@eks.health\,\displayNa

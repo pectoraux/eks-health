@@ -21,12 +21,27 @@ export default function MarketplacePage() {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>("all");
+  const [signedIn, setSignedIn] = useState(false);
 
   useEffect(() => {
+    // Fetch listings + session in parallel. Retry session check once on failure
+    // (handles cold-start races on serverless).
     fetch("/api/marketplace/listings", { cache: "no-store" })
       .then(r => r.json())
       .then(d => { if (d.ok) setListings(d.data.listings ?? []); setLoading(false); })
       .catch(() => setLoading(false));
+
+    const checkSession = async () => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await fetch("/api/auth/session", { cache: "no-store" });
+          const data = await res.json();
+          if (data.ok && data.data) { setSignedIn(true); return; }
+        } catch { /* retry */ }
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 300));
+      }
+    };
+    checkSession();
   }, []);
 
   const filtered = listings.filter(l => {
@@ -52,8 +67,14 @@ export default function MarketplacePage() {
             <span className="font-bold text-sm">Eks-Health</span>
           </button>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={() => router.push("/sign-in")}>Sign In</Button>
-            <Button size="sm" onClick={() => router.push("/sign-up")} className="bg-[var(--brand)] text-[var(--brand-foreground)]">Get Started</Button>
+            {signedIn ? (
+              <Button variant="ghost" size="sm" onClick={() => router.push("/dashboard")}>Dashboard</Button>
+            ) : (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => router.push("/sign-in")}>Sign In</Button>
+                <Button size="sm" onClick={() => router.push("/sign-up")} className="bg-[var(--brand)] text-[var(--brand-foreground)]">Get Started</Button>
+              </>
+            )}
           </div>
         </div>
       </header>

@@ -1,0 +1,800 @@
+     1→     1→#!/usr/bin/env bash
+     2→     2→# audit-systematic.sh — SYSTEMATIC bug audit of live Eks-Health app
+     3→     3→#
+     4→     4→# Site:    https://eks-health.vercel.app  (Vercel production, serverless)
+     5→     5→# Task ID: audit-systematic-1
+     6→     6→#
+     7→     7→# Goal:
+     8→     8→#   Drive a real Chrome session via agent-browser through every page and
+     9→     9→#   navigation flow. For each test, capture PASS/FAIL + observed vs expected
+    10→    10→#   + console errors + final URL. The app uses in-memory state that does
+    11→    11→#   not persist across serverless cold starts, so we test auth/session
+    12→    12→#   persistence especially hard.
+    13→    13→#
+    14→    14→# Key design choices:
+    15→    15→#   - api_probe returns pipe-delimited strings "status|ok|snippet" — avoids
+    16→    16→#     JSON-string-escaping issues when grep'ing for ok:true.
+    17→    17→#   - All `wait N` calls are followed by `sleep` for reliability.
+    18→    18→#   - Element refs are extracted with EXACT patterns (e.g. 'button "Marketplace"')
+    19→    19→#     rather than loose alternations that match the first line containing
+    20→    20→#     "button".
+    21→    21→#   - Per-test session setup: we sign in fresh where needed so tests don't
+    22→    22→#     inherit unexpected state from prior tests.
+    23→    23→#
+    24→    24→# Artifacts:
+    25→    25→#   Logs:        /home/z/my-project/.zscripts/logs/audit-systematic/
+    26→    26→#   Screenshots: /home/z/my-project/.zscripts/screenshots/audit-systematic/
+    27→    27→#   Report:      /home/z/my-project/.zscripts/logs/audit-systematic/REPORT.txt
+    28→    28→#   Bugs:        /home/z/my-project/.zscripts/logs/audit-systematic/BUGS.txt
+    29→    29→
+    30→    30→set -uo pipefail
+    31→    31→
+    32→    32→BASE="https://eks-health.vercel.app"
+    33→    33→SESSION="eks-audit-sys"
+    34→    34→ROOT="/home/z/my-project/.zscripts"
+    35→    35→LOGS="${ROOT}/logs/audit-systematic"
+    36→    36→SHOTS="${ROOT}/screenshots/audit-systematic"
+    37→    37→REPORT="${LOGS}/REPORT.txt"
+    38→    38→BUGS="${LOGS}/BUGS.txt"
+    39→    39→mkdir -p "$LOGS" "$SHOTS"
+    40→    40→: >"$REPORT"
+    41→    41→: >"$BUGS"
+    42→    42→
+    43→    43→# agent-browser helper (isolated session).
+    44→    44→ab() { agent-browser --session "$SESSION" "$@"; }
+    45→    45→
+    46→    46→# Write a line to the report (and stdout).
+    47→    47→rpt() { printf '%s\n' "$*" | tee -a "$REPORT" >&2; }
+    48→    48→section() {
+    49→    49→  local bar="================================================================"
+    50→    50→  {
+    51→    51→    printf '\n%s\n%s\n%s\n' "$bar" "$*" "$bar"
+    52→    52→  } | tee -a "$REPORT" >&2
+    53→    53→}
+    54→    54→bug() { printf '%s\n' "$*" | tee -a "$BUGS" >&2; }
+    55→    55→
+    56→    56→# Capture console + page errors + interactive snapshot + screenshot.
+    57→    57→capture_diagnostics() {
+    58→    58→  local tag="$1"
+    59→    59→  ab console >"${LOGS}/${tag}.console.txt" 2>&1 || true
+    60→    60→  ab errors  >"${LOGS}/${tag}.errors.txt" 2>&1 || true
+    61→    61→  ab snapshot -i -c >"${LOGS}/${tag}.snapshot.txt" 2>&1 || true
+    62→    62→  ab screenshot "${SHOTS}/${tag}.png" >/dev/null 2>&1 || true
+    63→    63→}
+    64→    64→
+    65→    65→# Count console error-level messages for a tag.
+    66→    66→console_err_count() {
+    67→    67→  local f="${LOGS}/$1.console.txt"
+    68→    68→  if [ -s "$f" ]; then
+    69→    69→    grep -iE '"type":"error"|level=error|SEVERE|Error:|Failed to|Uncaught' "$f" 2>/dev/null | wc -l | tr -d ' '
+    70→    70→  else
+    71→    71→    echo 0
+    72→    72→  fi
+    73→    73→}
+    74→    74→
+    75→    75→# Run a fetch() inside the browser. Returns a pipe-delimited string:
+    76→    76→#   "<status>|<ok 0/1>|<snippet>"
+    77→    77→# The snippet is the first ~150 chars of either d.error.message or
+    78→    78→# JSON.stringify(d.data ?? d), with pipe characters replaced so it doesn't
+    79→    79→# break parsing.
+    80→    80→api_probe() {
+    81→    81→  local method="$1" path="$2" body="${3:-}"
+    82→    82→  local js
+    83→    83→  if [ -n "$body" ]; then
+    84→    84→    js="fetch('${path}',{method:'${method}',headers:{'Content-Type':'application/json'},body:JSON.stringify(${body}),cache:'no-store'}).then(async r=>{const d=await r.json().catch(()=>({}));const snip=(d.error?.message||JSON.stringify(d.data??d)||'').slice(0,180).replace(/\\|/g,'/');return [r.status,d.ok?1:0,snip].join('|')})"
+    85→    85→  else
+    86→    86→    js="fetch('${path}',{cache:'no-store'}).then(async r=>{const d=await r.json().catch(()=>({}));const snip=(d.error?.message||JSON.stringify(d.data??d)||'').slice(0,180).replace(/\\|/g,'/');return [r.status,d.ok?1:0,snip].join('|')})"
+    87→    87→  fi
+    88→    88→  ab eval "$js" 2>/dev/null | tail -1 | tr -d '"'
+    89→    89→}
+    90→    90→
+    91→    91→# Sign in via direct API (reliable). Returns "status|ok|email|persona|err".
+    92→    92→api_sign_in() {
+    93→    93→  local email="$1" pass="$2"
+    94→    94→  ab eval "fetch('/api/auth/sign-in',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:'${email}',password:'${pass}'})}).then(async r=>{const d=await r.json();return [r.status,d.ok?1:0,d.data?.email||'',d.data?.activePersona||'',d.error?.message||''].join('|')})" 2>/dev/null | tail -1 | tr -d '"'
+    95→    95→}
+    96→    96→
+    97→    97→# Sign in via the actual UI form (fills inputs + clicks Sign In button).
+    98→    98→# Sets up the dashboard state. Returns 0 on success.
+    99→    99→ui_sign_in() {
+   100→   100→  local email="$1" pass="$2"
+   101→   101→  ab open "${BASE}/sign-in" >/dev/null 2>&1
+   102→   102→  ab wait --load networkidle >/dev/null 2>&1
+   103→   103→  sleep 1
+   104→   104→  ab snapshot -i -c >"${LOGS}/.signin.snap" 2>&1
+   105→   105→  local emailref passref signinref
+   106→   106→  emailref="$(grep -iE 'textbox.*Email' "${LOGS}/.signin.snap" | head -1 | sed -E 's/.*\[ref=([a-z0-9]+)\].*/\1/')"
+   107→   107→  passref="$(grep -iE 'textbox.*Password' "${LOGS}/.signin.snap" | head -1 | sed -E 's/.*\[ref=([a-z0-9]+)\].*/\1/')"
+   108→   108→  signinref="$(grep -E 'button "Sign In"' "${LOGS}/.signin.snap" | head -1 | sed -E 's/.*\[ref=([a-z0-9]+)\].*/\1/')"
+   109→   109→  if [ -z "$emailref" ] || [ -z "$passref" ] || [ -z "$signinref" ]; then
+   110→   110→    echo "ERROR: could not locate sign-in form fields (email=$emailref pass=$passref btn=$signinref)" >&2
+   111→   111→    return 1
+   112→   112→  fi
+   113→   113→  ab fill "@${emailref}" "$email" >/dev/null 2>&1 || true
+   114→   114→  ab fill "@${passref}"  "$pass"  >/dev/null 2>&1 || true
+   115→   115→  ab click "@${signinref}" >/dev/null 2>&1 || true
+   116→   116→  ab wait --url "**/dashboard" --timeout 15000 >/dev/null 2>&1 || true
+   117→   117→  sleep 3
+   118→   118→  return 0
+   119→   119→}
+   120→   120→
+   121→   121→# Extract an element ref by EXACTLY matching a snapshot pattern like
+   122→   122→# 'button "Marketplace"' (so we don't grab an unrelated button line).
+   123→   123→# Args: <snapshot-file> <pattern>
+   124→   124→ref_for() {
+   125→   125→  grep -E "$2" "$1" 2>/dev/null | head -1 | sed -E 's/.*\[ref=([a-z0-9]+)\].*/\1/'
+   126→   126→}
+   127→   127→
+   128→   128→# Count listings on the marketplace page.
+   129→   129→marketplace_card_count() {
+   130→   130→  ab eval '[...document.querySelectorAll("main .grid > div")].filter(c=>/installs/i.test(c.textContent||"")).length' 2>/dev/null | tail -1 | tr -d '"'
+   131→   131→}
+   132→   132→
+   133→   133→# Get "name|slug" of the first marketplace listing card.
+   134→   134→first_listing_slug() {
+   135→   135→  ab eval '(function(){const c=document.querySelector("main .grid > div");if(!c)return "none|none";const h3=c.querySelector("h3");const name=h3?h3.textContent.trim():"?";const slug=name.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");return name+"|"+slug})()' 2>/dev/null | tail -1 | tr -d '"'
+   136→   136→}
+   137→   137→
+   138→   138→# Pass/Fail counters
+   139→   139→PASS_COUNT=0
+   140→   140→FAIL_COUNT=0
+   141→   141→WARN_COUNT=0
+   142→   142→declare -a RESULTS=()
+   143→   143→
+   144→   144→record() {
+   145→   145→  # record <test_id> <PASS|FAIL|WARN> <summary>
+   146→   146→  RESULTS+=("$1|$2|$3")
+   147→   147→  case "$2" in
+   148→   148→    PASS) PASS_COUNT=$((PASS_COUNT+1));;
+   149→   149→    FAIL) FAIL_COUNT=$((FAIL_COUNT+1));;
+   150→   150→    WARN) WARN_COUNT=$((WARN_COUNT+1));;
+   151→   151→  esac
+   152→   152→  rpt "  RESULT: $2 — $3"
+   153→   153→}
+   154→   154→
+   155→   155→# Check that an api_probe result has status=200 and ok=1.
+   156→   156→# Args: <probe-result> <label>
+   157→   157→api_ok() {
+   158→   158→  local probe="$1" label="$2"
+   159→   159→  local status ok
+   160→   160→  status="$(echo "$probe" | cut -d'|' -f1)"
+   161→   161→  ok="$(echo "$probe" | cut -d'|' -f2)"
+   162→   162→  if [ "$status" = "200" ] && [ "$ok" = "1" ]; then
+   163→   163→    return 0
+   164→   164→  fi
+   165→   165→  return 1
+   166→   166→}
+   167→   167→
+   168→   168→# Stricter check: status=200, ok=1, AND the snippet contains real session
+   169→   169→# fields (accountId/email). /api/auth/session returns {ok:true,data:null} when
+   170→   170→# the cookie is invalid on a cold serverless instance — api_ok alone would
+   171→   171→# treat that as success, masking the real auth-persistence bug.
+   172→   172→# Args: <probe-result>
+   173→   173→session_is_valid() {
+   174→   174→  local probe="$1"
+   175→   175→  api_ok "$probe" session || return 1
+   176→   176→  # Look for real session fields. The snippet is JSON-stringified with escaped
+   177→   177→  # quotes (e.g. {\"accountId\":\"acc_...\"}), so grep for the field name
+   178→   178→  # without requiring exact quote matching.
+   179→   179→  echo "$probe" | grep -qiE 'accountId|email|displayName' || return 1
+   180→   180→  # Explicitly reject the null-session shape.
+   181→   181→  if echo "$probe" | grep -qiE 'data\\*":null|ok\\*":true,\\*"data\\*":null'; then
+   182→   182→    # Only reject if accountId is NOT present (null session has no accountId)
+   183→   183→    if ! echo "$probe" | grep -qi 'accountId'; then
+   184→   184→      return 1
+   185→   185→    fi
+   186→   186→  fi
+   187→   187→  return 0
+   188→   188→}
+   189→   189→
+   190→   190→# Extract a field from a probe result. Args: <probe> <field-index 1-based>.
+   191→   191→probe_field() { echo "$1" | cut -d'|' -f"$2"; }
+   192→   192→
+   193→   193→# ============================================================================
+   194→   194→# Header
+   195→   195→# ============================================================================
+   196→   196→rpt "Eks-Health systematic bug audit"
+   197→   197→rpt "Task ID:   audit-systematic-1"
+   198→   198→rpt "Target:    ${BASE}"
+   199→   199→rpt "Started:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   200→   200→rpt "Browser:   $(agent-browser --version 2>&1 | head -1)"
+   201→   201→rpt ""
+   202→   202→
+   203→   203→ab close --all >/dev/null 2>&1 || true
+   204→   204→
+   205→   205→# ============================================================================
+   206→   206→# TEST 1 — Landing page
+   207→   207→# ============================================================================
+   208→   208→section "TEST 1 — Landing page renders and Sign In button navigates to /sign-in"
+   209→   209→rpt "  Action: Open https://eks-health.vercel.app/"
+   210→   210→ab open "${BASE}/" >/dev/null 2>&1
+   211→   211→ab wait --load networkidle >/dev/null 2>&1
+   212→   212→sleep 3
+   213→   213→# Retry once if the page is still blank
+   214→   214→T1_OPEN_URL="$(ab get url 2>/dev/null || echo '?')"
+   215→   215→if [ "$T1_OPEN_URL" = "about:blank" ] || [ -z "$T1_OPEN_URL" ]; then
+   216→   216→  rpt "  WARN: initial open returned '$T1_OPEN_URL' — retrying"
+   217→   217→  ab open "${BASE}/" >/dev/null 2>&1
+   218→   218→  ab wait --load networkidle >/dev/null 2>&1
+   219→   219→  sleep 3
+   220→   220→  T1_OPEN_URL="$(ab get url 2>/dev/null || echo '?')"
+   221→   221→fi
+   222→   222→rpt "  Final URL after open: ${T1_OPEN_URL}"
+   223→   223→
+   224→   224→LANDING_HEADING="$(ab eval '[...document.querySelectorAll("h1,h2")].map(h=>h.textContent.trim()).filter(Boolean).slice(0,3).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   225→   225→rpt "  Landing headings: ${LANDING_HEADING}"
+   226→   226→rpt "  Expected: 'Prevent disease' heading present + a 'Sign In' button that routes to /sign-in"
+   227→   227→
+   228→   228→capture_diagnostics "test1-landing"
+   229→   229→
+   230→   230→# Find the Sign In button in the nav (exact match)
+   231→   231→SIGNIN_BTN_REF="$(ref_for "${LOGS}/test1-landing.snapshot.txt" 'button "Sign In"')"
+   232→   232→if [ -z "$SIGNIN_BTN_REF" ]; then
+   233→   233→  rpt "  WARN: no 'button \"Sign In\"\" in snapshot; trying text-based click"
+   234→   234→  ab find text "Sign In" click >/dev/null 2>&1 || true
+   235→   235→else
+   236→   236→  rpt "  Found Sign In button ref=@${SIGNIN_BTN_REF}, clicking"
+   237→   237→  ab click "@${SIGNIN_BTN_REF}" >/dev/null 2>&1 || true
+   238→   238→fi
+   239→   239→ab wait --url "**/sign-in" --timeout 10000 >/dev/null 2>&1 || true
+   240→   240→sleep 2
+   241→   241→T1_URL="$(ab get url 2>/dev/null || echo '?')"
+   242→   242→rpt "  Final URL after Sign In click: ${T1_URL}"
+   243→   243→T1_ERRORS="$(console_err_count test1-landing)"
+   244→   244→rpt "  Console errors on landing: ${T1_ERRORS}"
+   245→   245→
+   246→   246→if echo "$T1_URL" | grep -q "/sign-in" && echo "$LANDING_HEADING" | grep -qi "Prevent disease"; then
+   247→   247→  record T1 PASS "Landing rendered with 'Prevent disease' heading and Sign In routed to /sign-in (url=${T1_URL})"
+   248→   248→else
+   249→   249→  record T1 FAIL "Expected /sign-in + 'Prevent disease' heading; got url=${T1_URL}, headings=${LANDING_HEADING}"
+   250→   250→  bug "[T1] Landing page or Sign In navigation broken: url=${T1_URL}, headings=${LANDING_HEADING}"
+   251→   251→fi
+   252→   252→
+   253→   253→# ============================================================================
+   254→   254→# TEST 2 — Sign-in flow (Ama / Participant)
+   255→   255→# ============================================================================
+   256→   256→section "TEST 2 — Sign in as ama@eks.health / DemoPass123! and verify dashboard"
+   257→   257→rpt "  Action: Fill sign-in form and click Sign In"
+   258→   258→ui_sign_in "ama@eks.health" "DemoPass123!"
+   259→   259→T2_URL="$(ab get url 2>/dev/null || echo '?')"
+   260→   260→rpt "  Final URL: ${T2_URL}"
+   261→   261→rpt "  Expected: redirect to /dashboard; show 'Welcome, Ama Serwaa'; missions/habits/goals/competitions cards visible"
+   262→   262→sleep 2
+   263→   263→capture_diagnostics "test2-dashboard"
+   264→   264→
+   265→   265→T2_WELCOME="$(ab eval '/Welcome,\s*Ama Serwaa/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   266→   266→T2_MISSIONS="$(ab eval '/Today.{0,5}s\s*Missions/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   267→   267→T2_HABITS="$(ab eval '/Habit Streaks/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   268→   268→T2_GOALS="$(ab eval '/Active Goals/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   269→   269→T2_COMPS="$(ab eval '/Active Competitions/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   270→   270→T2_CARDS="$(ab eval '[...document.querySelectorAll("main [class*=card], main [class*=Card]")].filter(c=>c.textContent.trim().length>30).length' 2>/dev/null | tail -1 | tr -d '"')"
+   271→   271→T2_ERRORS="$(console_err_count test2-dashboard)"
+   272→   272→rpt "  Welcome Ama Serwaa visible: ${T2_WELCOME}"
+   273→   273→rpt "  Today's Missions visible:   ${T2_MISSIONS}"
+   274→   274→rpt "  Habit Streaks visible:      ${T2_HABITS}"
+   275→   275→rpt "  Active Goals visible:       ${T2_GOALS}"
+   276→   276→rpt "  Active Competitions visible:${T2_COMPS}"
+   277→   277→rpt "  Dashboard cards found:      ${T2_CARDS}"
+   278→   278→rpt "  Console errors:             ${T2_ERRORS}"
+   279→   279→
+   280→   280→if echo "$T2_URL" | grep -q "/dashboard" && [ "$T2_WELCOME" = "yes" ] && [ "$T2_MISSIONS" = "yes" ] && [ "$T2_HABITS" = "yes" ]; then
+   281→   281→  record T2 PASS "Signed in as Ama Serwaa, dashboard rendered with missions + habits cards (url=${T2_URL})"
+   282→   282→elif echo "$T2_URL" | grep -q "/sign-in"; then
+   283→   283→  record T2 FAIL "Bounced back to /sign-in (session not persisted across cold start) — url=${T2_URL}"
+   284→   284→  bug "[T2] Sign-in bounced back to /sign-in: Welcome=${T2_WELCOME}, Missions=${T2_MISSIONS}, Habits=${T2_HABITS}, url=${T2_URL}"
+   285→   285→else
+   286→   286→  record T2 FAIL "On /dashboard but body incomplete: Welcome=${T2_WELCOME}, Missions=${T2_MISSIONS}, Habits=${T2_HABITS}, Cards=${T2_CARDS}, url=${T2_URL}"
+   287→   287→  bug "[T2] Dashboard body incomplete: Welcome=${T2_WELCOME}, Missions=${T2_MISSIONS}, Habits=${T2_HABITS}, Cards=${T2_CARDS}, url=${T2_URL}"
+   288→   288→fi
+   289→   289→
+   290→   290→# ============================================================================
+   291→   291→# TEST 3 — Navigation from dashboard to Marketplace (REPORTED BUG)
+   292→   292→# ============================================================================
+   293→   293→section "TEST 3 — From /dashboard, click Marketplace in the header (reported bug)"
+   294→   294→rpt "  Action: Find 'Marketplace' button in the header and click it"
+   295→   295→rpt "  Expected: stay logged in and land on /marketplace; if logged out → BUG"
+   296→   296→# Re-establish session via API (T2's UI sign-in may have bounced). This lets
+   297→   297→# us isolate the Marketplace-click bug from the sign-in bug.
+   298→   298→ab eval 'fetch("/api/auth/sign-out",{method:"POST"}).catch(()=>{})' >/dev/null 2>&1
+   299→   299→ab cookies clear >/dev/null 2>&1
+   300→   300→ab open "${BASE}/sign-in" >/dev/null 2>&1
+   301→   301→ab wait --load networkidle >/dev/null 2>&1
+   302→   302→sleep 1
+   303→   303→T3_SIGNIN="$(api_sign_in "ama@eks.health" "DemoPass123!")"
+   304→   304→rpt "  API sign-in (participant): ${T3_SIGNIN}"
+   305→   305→sleep 2
+   306→   306→ab open "${BASE}/dashboard" >/dev/null 2>&1
+   307→   307→ab wait --load networkidle >/dev/null 2>&1
+   308→   308→sleep 3
+   309→   309→ab snapshot -i -c >"${LOGS}/test3-dashboard.snap" 2>&1
+   310→   310→MARKET_REF="$(ref_for "${LOGS}/test3-dashboard.snap" 'button "Marketplace"')"
+   311→   311→if [ -z "$MARKET_REF" ]; then
+   312→   312→  rpt "  WARN: no exact 'button \"Marketplace\"' in snapshot; trying text-based click"
+   313→   313→  ab find text "Marketplace" click >/dev/null 2>&1 || true
+   314→   314→else
+   315→   315→  rpt "  Found Marketplace button ref=@${MARKET_REF}, clicking"
+   316→   316→  ab click "@${MARKET_REF}" >/dev/null 2>&1 || true
+   317→   317→fi
+   318→   318→ab wait --url "**/marketplace" --timeout 15000 >/dev/null 2>&1 || true
+   319→   319→ab wait --load networkidle >/dev/null 2>&1
+   320→   320→sleep 3
+   321→   321→T3_URL="$(ab get url 2>/dev/null || echo '?')"
+   322→   322→rpt "  Final URL after Marketplace click: ${T3_URL}"
+   323→   323→capture_diagnostics "test3-marketplace"
+   324→   324→
+   325→   325→T3_SESSION="$(api_probe GET /api/auth/session)"
+   326→   326→rpt "  /api/auth/session after Marketplace click: ${T3_SESSION}"
+   327→   327→T3_LISTING_COUNT="$(marketplace_card_count)"
+   328→   328→rpt "  Marketplace listing cards: ${T3_LISTING_COUNT}"
+   329→   329→T3_ERRORS="$(console_err_count test3-marketplace)"
+   330→   330→
+   331→   331→# T3 PASS requires: URL is /marketplace AND session is still valid (not null).
+   332→   332→# A null session ({ok:true,data:null}) means the serverless instance that
+   333→   333→# handled the /api/auth/session probe doesn't know about our cookie — the
+   334→   334→# core cold-start bug.
+   335→   335→if echo "$T3_URL" | grep -q "/marketplace" && session_is_valid "$T3_SESSION"; then
+   336→   336→  record T3 PASS "Clicking Marketplace kept user logged in and routed to /marketplace (cards=${T3_LISTING_COUNT})"
+   337→   337→elif echo "$T3_URL" | grep -q "/marketplace"; then
+   338→   338→  record T3 WARN "Routed to /marketplace but /api/auth/session returned null data (cold-start session loss on probe instance) — url=${T3_URL}"
+   339→   339→  bug "[T3] Marketplace URL ok but session probe null (cold start): url=${T3_URL}, session=${T3_SESSION}"
+   340→   340→elif echo "$T3_URL" | grep -q "/sign-in"; then
+   341→   341→  record T3 FAIL "Clicking Marketplace redirected to /sign-in — auth lost on navigation (url=${T3_URL})"
+   342→   342→  bug "[T3] Marketplace click logged user out: url=${T3_URL}, session=${T3_SESSION}"
+   343→   343→else
+   344→   344→  record T3 FAIL "Unexpected outcome on Marketplace click: url=${T3_URL}, session=${T3_SESSION}"
+   345→   345→  bug "[T3] Marketplace navigation unexpected: url=${T3_URL}, session=${T3_SESSION}"
+   346→   346→fi
+   347→   347→
+   348→   348→# ============================================================================
+   349→   349→# TEST 4 — Program detail page (REPORTED BUG)
+   350→   350→# ============================================================================
+   351→   351→section "TEST 4 — On /marketplace, click a listing card (reported bug: 'Program not found')"
+   352→   352→rpt "  Action: Click the first listing card on /marketplace"
+   353→   353→rpt "  Expected: program detail page renders (NOT 'Program not found')"
+   354→   354→# Make sure we're on /marketplace (in case Test 3 failed to land there)
+   355→   355→if ! echo "$T3_URL" | grep -q "/marketplace"; then
+   356→   356→  rpt "  Not on /marketplace — navigating directly"
+   357→   357→  ab open "${BASE}/marketplace" >/dev/null 2>&1
+   358→   358→  ab wait --load networkidle >/dev/null 2>&1
+   359→   359→  sleep 3
+   360→   360→fi
+   361→   361→T4_EXPECTED_SLUG="$(first_listing_slug)"
+   362→   362→rpt "  First listing name|expected slug: ${T4_EXPECTED_SLUG}"
+   363→   363→# Click the first listing card
+   364→   364→ab eval 'const c=document.querySelector("main .grid > div");if(c)c.click()' >/dev/null 2>&1
+   365→   365→ab wait --url "**/programs/**" --timeout 15000 >/dev/null 2>&1 || true
+   366→   366→ab wait --load networkidle >/dev/null 2>&1
+   367→   367→sleep 3
+   368→   368→T4_URL="$(ab get url 2>/dev/null || echo '?')"
+   369→   369→rpt "  Final URL after card click: ${T4_URL}"
+   370→   370→capture_diagnostics "test4-program-detail"
+   371→   371→
+   372→   372→T4_NOT_FOUND="$(ab eval '/Program not found/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   373→   373→T4_BODY_LEN="$(ab eval 'document.body.innerText.length' 2>/dev/null | tail -1 | tr -d '"')"
+   374→   374→T4_H1="$(ab eval '[...document.querySelectorAll("h1")].map(h=>h.textContent.trim()).slice(0,2).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   375→   375→T4_INSTALL_BTN="$(ab eval '/Install Program|Sign In to Install/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   376→   376→T4_ERRORS="$(console_err_count test4-program-detail)"
+   377→   377→rpt "  'Program not found' visible: ${T4_NOT_FOUND}"
+   378→   378→rpt "  Body text length:           ${T4_BODY_LEN}"
+   379→   379→rpt "  H1 on page:                 ${T4_H1}"
+   380→   380→rpt "  Install button visible:     ${T4_INSTALL_BTN}"
+   381→   381→rpt "  Console errors:             ${T4_ERRORS}"
+   382→   382→
+   383→   383→if [ "$T4_NOT_FOUND" = "no" ] && [ "${T4_BODY_LEN:-0}" -gt 200 ] 2>/dev/null && echo "$T4_URL" | grep -q "/programs/"; then
+   384→   384→  record T4 PASS "Program detail page rendered (h1=${T4_H1}, body=${T4_BODY_LEN}, url=${T4_URL})"
+   385→   385→elif [ "$T4_NOT_FOUND" = "yes" ]; then
+   386→   386→  record T4 FAIL "Program detail shows 'Program not found' — listing IDs differ across serverless instances (url=${T4_URL})"
+   387→   387→  bug "[T4] Program detail 'not found': expected_slug=${T4_EXPECTED_SLUG}, url=${T4_URL}, body=${T4_BODY_LEN}, h1=${T4_H1}"
+   388→   388→else
+   389→   389→  record T4 FAIL "Program detail page unexpected state: not_found=${T4_NOT_FOUND}, body=${T4_BODY_LEN}, url=${T4_URL}"
+   390→   390→  bug "[T4] Program detail page unexpected: not_found=${T4_NOT_FOUND}, body=${T4_BODY_LEN}, url=${T4_URL}"
+   391→   391→fi
+   392→   392→
+   393→   393→# ============================================================================
+   394→   394→# TEST 5 — Timeline page
+   395→   395→# ============================================================================
+   396→   396→section "TEST 5 — Navigate to /dashboard/timeline"
+   397→   397→rpt "  Action: Open /dashboard/timeline directly"
+   398→   398→rpt "  Expected: renders with entries; user stays logged in"
+   399→   399→ab open "${BASE}/dashboard/timeline" >/dev/null 2>&1
+   400→   400→ab wait --load networkidle >/dev/null 2>&1
+   401→   401→sleep 4
+   402→   402→T5_URL="$(ab get url 2>/dev/null || echo '?')"
+   403→   403→rpt "  Final URL: ${T5_URL}"
+   404→   404→capture_diagnostics "test5-timeline"
+   405→   405→
+   406→   406→T5_SESSION="$(api_probe GET /api/auth/session)"
+   407→   407→rpt "  /api/auth/session: ${T5_SESSION}"
+   408→   408→T5_FILTERS="$(ab eval '[...document.querySelectorAll("[role=tablist] [role=tab], main button")].filter(b=>/^(All|Measurements|Missions|Competitions)$/.test(b.textContent.trim())).length' 2>/dev/null | tail -1 | tr -d '"')"
+   409→   409→T5_ENTRIES="$(ab eval '[...document.querySelectorAll("main [class*=space-y-3] > div, main .grid > div, main li, main [class*=timeline] > div")].filter(d=>/Measurement:|joined|participants|streak|complete|habit|goal|competition/i.test(d.textContent||"")).length' 2>/dev/null | tail -1 | tr -d '"')"
+   410→   410→T5_H2="$(ab eval '[...document.querySelectorAll("h1,h2")].map(h=>h.textContent.trim()).filter(Boolean).slice(0,3).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   411→   411→T5_ERRORS="$(console_err_count test5-timeline)"
+   412→   412→rpt "  Timeline filter buttons: ${T5_FILTERS}"
+   413→   413→rpt "  Timeline entries:        ${T5_ENTRIES}"
+   414→   414→rpt "  Headings:                ${T5_H2}"
+   415→   415→rpt "  Console errors:          ${T5_ERRORS}"
+   416→   416→
+   417→   417→if echo "$T5_URL" | grep -q "/dashboard/timeline" && [ "${T5_ENTRIES:-0}" -gt 0 ] 2>/dev/null && session_is_valid "$T5_SESSION"; then
+   418→   418→  record T5 PASS "Timeline rendered with ${T5_ENTRIES} entries, user still logged in"
+   419→   419→elif echo "$T5_URL" | grep -q "/dashboard/timeline" && [ "${T5_ENTRIES:-0}" -gt 0 ] 2>/dev/null; then
+   420→   420→  record T5 WARN "Timeline page rendered with ${T5_ENTRIES} entries but /api/auth/session returned null (cold-start session loss on probe instance)"
+   421→   421→  bug "[T5] Timeline rendered but session probe null (cold start): url=${T5_URL}, session=${T5_SESSION}"
+   422→   422→elif echo "$T5_URL" | grep -q "/sign-in"; then
+   423→   423→  record T5 FAIL "Timeline redirected to /sign-in (auth lost on direct URL)"
+   424→   424→  bug "[T5] Timeline redirected to /sign-in: url=${T5_URL}, session=${T5_SESSION}"
+   425→   425→else
+   426→   426→  record T5 FAIL "Timeline incomplete: filters=${T5_FILTERS}, entries=${T5_ENTRIES}, url=${T5_URL}, session=${T5_SESSION}"
+   427→   427→  bug "[T5] Timeline incomplete: filters=${T5_FILTERS}, entries=${T5_ENTRIES}, url=${T5_URL}"
+   428→   428→fi
+   429→   429→
+   430→   430→# ============================================================================
+   431→   431→# TEST 6 — Settings page
+   432→   432→# ============================================================================
+   433→   433→section "TEST 6 — Navigate to /dashboard/settings"
+   434→   434→rpt "  Action: Open /dashboard/settings"
+   435→   435→rpt "  Expected: renders all cards; user stays logged in"
+   436→   436→ab open "${BASE}/dashboard/settings" >/dev/null 2>&1
+   437→   437→ab wait --load networkidle >/dev/null 2>&1
+   438→   438→sleep 4
+   439→   439→T6_URL="$(ab get url 2>/dev/null || echo '?')"
+   440→   440→rpt "  Final URL: ${T6_URL}"
+   441→   441→capture_diagnostics "test6-settings"
+   442→   442→
+   443→   443→T6_SESSION="$(api_probe GET /api/auth/session)"
+   444→   444→rpt "  /api/auth/session: ${T6_SESSION}"
+   445→   445→T6_CARDS="$(ab eval '[...document.querySelectorAll("[class*=card],[class*=Card]")].filter(c=>c.textContent.trim().length>30).length' 2>/dev/null | tail -1 | tr -d '"')"
+   446→   446→T6_HEADINGS="$(ab eval '[...document.querySelectorAll("main h2, main h3, [class*=CardTitle]")].map(h=>h.textContent.trim()).filter(Boolean).slice(0,15).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   447→   447→T6_ERRORS="$(console_err_count test6-settings)"
+   448→   448→rpt "  Settings cards:   ${T6_CARDS}"
+   449→   449→rpt "  Settings headings:${T6_HEADINGS}"
+   450→   450→rpt "  Console errors:   ${T6_ERRORS}"
+   451→   451→
+   452→   452→if echo "$T6_URL" | grep -q "/dashboard/settings" && [ "${T6_CARDS:-0}" -ge 3 ] 2>/dev/null && api_ok "$T6_SESSION" session; then
+   453→   453→  record T6 PASS "Settings rendered with ${T6_CARDS} cards, user still logged in"
+   454→   454→elif echo "$T6_URL" | grep -q "/sign-in"; then
+   455→   455→  record T6 FAIL "Settings redirected to /sign-in (auth lost on cold start)"
+   456→   456→  bug "[T6] Settings redirected to /sign-in: url=${T6_URL}, session=${T6_SESSION}"
+   457→   457→else
+   458→   458→  record T6 FAIL "Settings incomplete: cards=${T6_CARDS}, url=${T6_URL}, session=${T6_SESSION}"
+   459→   459→  bug "[T6] Settings incomplete: cards=${T6_CARDS}, url=${T6_URL}"
+   460→   460→fi
+   461→   461→
+   462→   462→# ============================================================================
+   463→   463→# TEST 7 — Console page
+   464→   464→# ============================================================================
+   465→   465→section "TEST 7 — Navigate to /console"
+   466→   466→rpt "  Action: Open /console"
+   467→   467→rpt "  Expected: renders; user stays logged in"
+   468→   468→ab open "${BASE}/console" >/dev/null 2>&1
+   469→   469→ab wait --load networkidle >/dev/null 2>&1
+   470→   470→sleep 4
+   471→   471→T7_URL="$(ab get url 2>/dev/null || echo '?')"
+   472→   472→rpt "  Final URL: ${T7_URL}"
+   473→   473→capture_diagnostics "test7-console"
+   474→   474→
+   475→   475→T7_SESSION="$(api_probe GET /api/auth/session)"
+   476→   476→rpt "  /api/auth/session: ${T7_SESSION}"
+   477→   477→# Console nav items live in a sidebar; query all interactive elements, not just <main>.
+   478→   478→T7_SECTIONS="$(ab eval '[...document.querySelectorAll("a, button, [role=tab], [role=treeitem]")].filter(b=>/overview|kernel|identity|programs|marketplace|health|missions|competitions|research|orchestrator|population|technicians|sessions|audit|compliance|developer|architecture/i.test(b.textContent||"")).length' 2>/dev/null | tail -1 | tr -d '"')"
+   479→   479→T7_H1="$(ab eval '[...document.querySelectorAll("h1,h2")].map(h=>h.textContent.trim()).filter(Boolean).slice(0,3).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   480→   480→T7_BODY_LEN="$(ab eval 'document.body.innerText.length' 2>/dev/null | tail -1 | tr -d '"')"
+   481→   481→T7_ERRORS="$(console_err_count test7-console)"
+   482→   482→rpt "  Console nav items:  ${T7_SECTIONS}"
+   483→   483→rpt "  Console headings:   ${T7_H1}"
+   484→   484→rpt "  Console body len:   ${T7_BODY_LEN}"
+   485→   485→rpt "  Console errors:     ${T7_ERRORS}"
+   486→   486→
+   487→   487→if echo "$T7_URL" | grep -q "/console" && [ "${T7_BODY_LEN:-0}" -gt 500 ] 2>/dev/null && [ "${T7_SECTIONS:-0}" -ge 5 ] 2>/dev/null; then
+   488→   488→  if session_is_valid "$T7_SESSION"; then
+   489→   489→    record T7 PASS "Console rendered (body=${T7_BODY_LEN}, nav=${T7_SECTIONS}), session valid"
+   490→   490→  else
+   491→   491→    record T7 PASS "Console rendered (body=${T7_BODY_LEN}, nav=${T7_SECTIONS}); session probe null (cold start) but /console is public"
+   492→   492→  fi
+   493→   493→elif echo "$T7_URL" | grep -q "/sign-in"; then
+   494→   494→  record T7 WARN "Console redirected to /sign-in (auth required? acceptable if intentional)"
+   495→   495→  bug "[T7] Console redirected to /sign-in: url=${T7_URL}, session=${T7_SESSION}"
+   496→   496→else
+   497→   497→  record T7 FAIL "Console incomplete: sections=${T7_SECTIONS}, body=${T7_BODY_LEN}, url=${T7_URL}"
+   498→   498→  bug "[T7] Console incomplete: sections=${T7_SECTIONS}, body=${T7_BODY_LEN}, url=${T7_URL}"
+   499→   499→fi
+   500→   500→
+   501→   501→# ============================================================================
+   502→   502→# TEST 8 — Role switching (admin has 7 personas)
+   503→   503→# ============================================================================
+   504→   504→section "TEST 8 — Role switcher on dashboard (admin)"
+   505→   505→rpt "  Action: Sign in as admin (ekontetevi@gmail.com), click 'Developer' role"
+   506→   506→rpt "  Expected: dashboard updates; /api/auth/session reflects new activePersona"
+   507→   507→ab eval 'fetch("/api/auth/sign-out",{method:"POST"}).catch(()=>{})' >/dev/null 2>&1
+   508→   508→ab cookies clear >/dev/null 2>&1
+   509→   509→ab open "${BASE}/sign-in" >/dev/null 2>&1
+   510→   510→ab wait --load networkidle >/dev/null 2>&1
+   511→   511→sleep 1
+   512→   512→T8_SIGNIN="$(api_sign_in "ekontetevi@gmail.com" "Payswap123456")"
+   513→   513→rpt "  API sign-in (admin): ${T8_SIGNIN}"
+   514→   514→sleep 2
+   515→   515→# Verify session is actually valid before navigating (retry once if not)
+   516→   516→T8_PRE_SESSION="$(api_probe GET /api/auth/session)"
+   517→   517→if ! session_is_valid "$T8_PRE_SESSION"; then
+   518→   518→  rpt "  WARN: session not valid after first sign-in (cold start); retrying"
+   519→   519→  sleep 2
+   520→   520→  api_sign_in "ekontetevi@gmail.com" "Payswap123456" >/dev/null 2>&1
+   521→   521→  sleep 2
+   522→   522→  T8_PRE_SESSION="$(api_probe GET /api/auth/session)"
+   523→   523→fi
+   524→   524→rpt "  Pre-navigation session: ${T8_PRE_SESSION}"
+   525→   525→ab open "${BASE}/dashboard" >/dev/null 2>&1
+   526→   526→ab wait --load networkidle >/dev/null 2>&1
+   527→   527→sleep 4
+   528→   528→T8_URL_BEFORE="$(ab get url 2>/dev/null || echo '?')"
+   529→   529→rpt "  Dashboard URL: ${T8_URL_BEFORE}"
+   530→   530→T8_SESSION_BEFORE="$(api_probe GET /api/auth/session)"
+   531→   531→rpt "  /api/auth/session before switch: ${T8_SESSION_BEFORE}"
+   532→   532→capture_diagnostics "test8-dashboard-before"
+   533→   533→
+   534→   534→# If the dashboard bounced to /sign-in, we can't test the role switcher.
+   535→   535→if echo "$T8_URL_BEFORE" | grep -q "/sign-in"; then
+   536→   536→  record T8 FAIL "Admin dashboard bounced to /sign-in (session lost on navigation) — cannot test role switcher"
+   537→   537→  bug "[T8] Admin dashboard bounced to /sign-in before role switch could be tested: session_before=${T8_SESSION_BEFORE}, url=${T8_URL_BEFORE}"
+   538→   538→else
+   539→   539→  ab snapshot -i -c >"${LOGS}/test8-admin.snap" 2>&1
+   540→   540→  DEV_REF="$(ref_for "${LOGS}/test8-admin.snap" 'button "Developer"')"
+   541→   541→  if [ -z "$DEV_REF" ]; then
+   542→   542→    rpt "  WARN: no 'button \"Developer\"' in snapshot; trying text click"
+   543→   543→    ab find text "Developer" click >/dev/null 2>&1 || true
+   544→   544→  else
+   545→   545→    rpt "  Found Developer role button ref=@${DEV_REF}, clicking"
+   546→   546→    ab click "@${DEV_REF}" >/dev/null 2>&1 || true
+   547→   547→  fi
+   548→   548→  sleep 5
+   549→   549→  T8_SESSION_AFTER="$(api_probe GET /api/auth/session)"
+   550→   550→  rpt "  /api/auth/session after switch click: ${T8_SESSION_AFTER}"
+   551→   551→  capture_diagnostics "test8-dashboard-after"
+   552→   552→  T8_URL_AFTER="$(ab get url 2>/dev/null || echo '?')"
+   553→   553→  rpt "  Dashboard URL after switch: ${T8_URL_AFTER}"
+   554→   554→  # Check whether the dashboard text reflects developer persona (e.g. "Developer" badge highlighted, or developer-specific content like "Programs" or "SDK")
+   555→   555→  T8_DASH_DEV_CONTENT="$(ab eval '/Developer Profile|SDK|Programs Published|Developer SDK|developer/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   556→   556→  rpt "  Developer-specific content visible: ${T8_DASH_DEV_CONTENT}"
+   557→   557→
+   558→   558→  # The snippet contains JSON-stringified data; persona appears as \"activePersona\":\"developer\"
+   559→   559→  # Also check that the session is still valid (not null) AND persona is developer.
+   560→   560→  if session_is_valid "$T8_SESSION_AFTER" && echo "$T8_SESSION_AFTER" | grep -qi 'activePersona.\{0,3\}developer\|developer.\{0,3\}activePersona'; then
+   561→   561→    record T8 PASS "Role switch API succeeded — session now reflects developer persona"
+   562→   562→  elif echo "$T8_SESSION_AFTER" | grep -qi 'developer'; then
+   563→   563→    record T8 PASS "Role switch succeeded (developer persona detected in session)"
+   564→   564→  elif ! session_is_valid "$T8_SESSION_AFTER"; then
+   565→   565→    record T8 FAIL "Session became null after role switch click (cold-start session loss): session=${T8_SESSION_AFTER}"
+   566→   566→    bug "[T8] Session null after role switch: before=${T8_SESSION_BEFORE}, after=${T8_SESSION_AFTER}"
+   567→   567→  else
+   568→   568→    record T8 FAIL "Role switch did not change persona: session=${T8_SESSION_AFTER}"
+   569→   569→    bug "[T8] Role switch failed: before=${T8_SESSION_BEFORE}, after=${T8_SESSION_AFTER}"
+   570→   570→  fi
+   571→   571→fi
+   572→   572→
+   573→   573→# ============================================================================
+   574→   574→# TEST 9 — Back navigation (re-sign in as participant first)
+   575→   575→# ============================================================================
+   576→   576→section "TEST 9 — Back navigation from marketplace"
+   577→   577→rpt "  Action: Sign in as participant, go to /marketplace, use browser back"
+   578→   578→rpt "  Expected: land back on /dashboard and stay logged in"
+   579→   579→ab eval 'fetch("/api/auth/sign-out",{method:"POST"}).catch(()=>{})' >/dev/null 2>&1
+   580→   580→ab cookies clear >/dev/null 2>&1
+   581→   581→ab open "${BASE}/sign-in" >/dev/null 2>&1
+   582→   582→ab wait --load networkidle >/dev/null 2>&1
+   583→   583→sleep 1
+   584→   584→api_sign_in "ama@eks.health" "DemoPass123!" >/dev/null 2>&1
+   585→   585→sleep 2
+   586→   586→# Navigate to /dashboard first (to establish back-history)
+   587→   587→ab open "${BASE}/dashboard" >/dev/null 2>&1
+   588→   588→ab wait --load networkidle >/dev/null 2>&1
+   589→   589→sleep 3
+   590→   590→T9_DASH_URL="$(ab get url 2>/dev/null || echo '?')"
+   591→   591→rpt "  /dashboard URL: ${T9_DASH_URL}"
+   592→   592→# Now go to /marketplace
+   593→   593→ab open "${BASE}/marketplace" >/dev/null 2>&1
+   594→   594→ab wait --load networkidle >/dev/null 2>&1
+   595→   595→sleep 3
+   596→   596→T9_BEFORE_URL="$(ab get url 2>/dev/null || echo '?')"
+   597→   597→rpt "  URL before back: ${T9_BEFORE_URL}"
+   598→   598→# Use browser back
+   599→   599→ab back >/dev/null 2>&1 || true
+   600→   600→ab wait --load networkidle >/dev/null 2>&1
+   601→   601→sleep 3
+   602→   602→T9_AFTER_URL="$(ab get url 2>/dev/null || echo '?')"
+   603→   603→rpt "  URL after back:  ${T9_AFTER_URL}"
+   604→   604→capture_diagnostics "test9-after-back"
+   605→   605→T9_SESSION="$(api_probe GET /api/auth/session)"
+   606→   606→rpt "  /api/auth/session: ${T9_SESSION}"
+   607→   607→
+   608→   608→if session_is_valid "$T9_SESSION"; then
+   609→   609→  record T9 PASS "Back navigation kept user logged in (url=${T9_AFTER_URL})"
+   610→   610→else
+   611→   611→  record T9 FAIL "Back navigation: session is null after back (url=${T9_AFTER_URL}, session=${T9_SESSION}) — cold-start session loss"
+   612→   612→  bug "[T9] Back navigation session null: url=${T9_AFTER_URL}, session=${T9_SESSION}"
+   613→   613→fi
+   614→   614→
+   615→   615→# ============================================================================
+   616→   616→# TEST 10 — Direct URL access to protected page
+   617→   617→# ============================================================================
+   618→   618→section "TEST 10 — Direct URL access to /dashboard/timeline"
+   619→   619→rpt "  Action: Sign in fresh, then directly open /dashboard/timeline"
+   620→   620→rpt "  Expected: stay logged in and view the page (NOT redirected to /sign-in)"
+   621→   621→ab eval 'fetch("/api/auth/sign-out",{method:"POST"}).catch(()=>{})' >/dev/null 2>&1
+   622→   622→ab cookies clear >/dev/null 2>&1
+   623→   623→ab open "${BASE}/sign-in" >/dev/null 2>&1
+   624→   624→ab wait --load networkidle >/dev/null 2>&1
+   625→   625→sleep 1
+   626→   626→api_sign_in "ama@eks.health" "DemoPass123!" >/dev/null 2>&1
+   627→   627→sleep 2
+   628→   628→ab open "${BASE}/dashboard/timeline" >/dev/null 2>&1
+   629→   629→ab wait --load networkidle >/dev/null 2>&1
+   630→   630→sleep 4
+   631→   631→T10_URL="$(ab get url 2>/dev/null || echo '?')"
+   632→   632→rpt "  Final URL: ${T10_URL}"
+   633→   633→capture_diagnostics "test10-direct-timeline"
+   634→   634→T10_SESSION="$(api_probe GET /api/auth/session)"
+   635→   635→rpt "  /api/auth/session: ${T10_SESSION}"
+   636→   636→T10_ENTRIES="$(ab eval '[...document.querySelectorAll("main [class*=space-y-3] > div, main .grid > div, main li, main [class*=timeline] > div")].filter(d=>/Measurement:|joined|participants|streak|complete|habit|goal|competition/i.test(d.textContent||"")).length' 2>/dev/null | tail -1 | tr -d '"')"
+   637→   637→T10_H1="$(ab eval '[...document.querySelectorAll("h1")].map(h=>h.textContent.trim()).slice(0,2).join(" | ")' 2>/dev/null | tail -1 | tr -d '"')"
+   638→   638→rpt "  Timeline entries on direct access: ${T10_ENTRIES}"
+   639→   639→rpt "  Timeline H1: ${T10_H1}"
+   640→   640→
+   641→   641→if echo "$T10_URL" | grep -q "/dashboard/timeline" && session_is_valid "$T10_SESSION"; then
+   642→   642→  record T10 PASS "Direct URL access to /dashboard/timeline kept user logged in (entries=${T10_ENTRIES}, h1=${T10_H1})"
+   643→   643→elif echo "$T10_URL" | grep -q "/dashboard/timeline" && [ "${T10_ENTRIES:-0}" -gt 0 ] 2>/dev/null; then
+   644→   644→  record T10 WARN "Direct URL: /dashboard/timeline rendered (${T10_ENTRIES} entries) but /api/auth/session returned null (cold-start session loss)"
+   645→   645→  bug "[T10] Direct URL rendered but session probe null (cold start): url=${T10_URL}, session=${T10_SESSION}"
+   646→   646→elif echo "$T10_URL" | grep -q "/sign-in"; then
+   647→   647→  record T10 FAIL "Direct URL access redirected to /sign-in (auth lost on cold start)"
+   648→   648→  bug "[T10] Direct URL redirected to /sign-in: url=${T10_URL}, session=${T10_SESSION}"
+   649→   649→else
+   650→   650→  record T10 FAIL "Direct URL unexpected state: url=${T10_URL}, session=${T10_SESSION}"
+   651→   651→  bug "[T10] Direct URL unexpected: url=${T10_URL}, session=${T10_SESSION}"
+   652→   652→fi
+   653→   653→
+   654→   654→# ============================================================================
+   655→   655→# TEST 11 — Sign in as Platform Admin
+   656→   656→# ============================================================================
+   657→   657→section "TEST 11 — Sign in as admin (ekontetevi@gmail.com / Payswap123456)"
+   658→   658→rpt "  Action: Sign out, sign in as admin, verify admin dashboard"
+   659→   659→rpt "  Expected: dashboard shows accounts + waitlist (platform_admin persona)"
+   660→   660→ab eval 'fetch("/api/auth/sign-out",{method:"POST"}).catch(()=>{})' >/dev/null 2>&1
+   661→   661→ab cookies clear >/dev/null 2>&1
+   662→   662→ab open "${BASE}/sign-in" >/dev/null 2>&1
+   663→   663→ab wait --load networkidle >/dev/null 2>&1
+   664→   664→sleep 1
+   665→   665→api_sign_in "ekontetevi@gmail.com" "Payswap123456" >/dev/null 2>&1
+   666→   666→sleep 2
+   667→   667→ab open "${BASE}/dashboard" >/dev/null 2>&1
+   668→   668→ab wait --load networkidle >/dev/null 2>&1
+   669→   669→sleep 5
+   670→   670→T11_URL="$(ab get url 2>/dev/null || echo '?')"
+   671→   671→rpt "  Final URL: ${T11_URL}"
+   672→   672→capture_diagnostics "test11-admin-dashboard"
+   673→   673→
+   674→   674→T11_SESSION="$(api_probe GET /api/auth/session)"
+   675→   675→rpt "  /api/auth/session: ${T11_SESSION}"
+   676→   676→T11_DASH="$(api_probe GET /api/dashboard)"
+   677→   677→rpt "  /api/dashboard snippet: ${T11_DASH}"
+   678→   678→T11_HAS_ACCOUNTS="$(ab eval '/Accounts|User Management|Total Accounts|accounts/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   679→   679→T11_HAS_WAITLIST="$(ab eval '/Waitlist|waitlist/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   680→   680→T11_ACCOUNT_ROWS="$(ab eval '[...document.querySelectorAll("table tr, [class*=table] tr, [class*=row]")].filter(r=>/@/.test(r.textContent||"")).length' 2>/dev/null | tail -1 | tr -d '"')"
+   681→   681→T11_WELCOME="$(ab eval '/Welcome,\s*Platform Administrator/i.test(document.body.innerText) ? "yes" : "no"' 2>/dev/null | tail -1 | tr -d '"')"
+   682→   682→T11_ERRORS="$(console_err_count test11-admin-dashboard)"
+   683→   683→rpt "  Welcome Platform Admin visible: ${T11_WELCOME}"
+   684→   684→rpt "  'Accounts' visible:            ${T11_HAS_ACCOUNTS}"
+   685→   685→rpt "  'Waitlist' visible:            ${T11_HAS_WAITLIST}"
+   686→   686→rpt "  Account rows found:            ${T11_ACCOUNT_ROWS}"
+   687→   687→rpt "  Console errors:                ${T11_ERRORS}"
+   688→   688→
+   689→   689→# Probe /api/identity/accounts directly to see if the in-memory store is seeded.
+   690→   690→T11_ACCT_API="$(api_probe GET /api/identity/accounts)"
+   691→   691→rpt "  /api/identity/accounts: ${T11_ACCT_API}"
+   692→   692→T11_WL_API="$(api_probe GET /api/auth/waitlist)"
+   693→   693→rpt "  /api/auth/waitlist:     ${T11_WL_API}"
+   694→   694→
+   695→   695→if echo "$T11_SESSION" | grep -qi 'platform_admin' && [ "$T11_WELCOME" = "yes" ] && [ "$T11_HAS_ACCOUNTS" = "yes" ] && [ "$T11_HAS_WAITLIST" = "yes" ]; then
+   696→   696→  record T11 PASS "Admin dashboard renders with Accounts + Waitlist sections (rows=${T11_ACCOUNT_ROWS})"
+   697→   697→elif echo "$T11_SESSION" | grep -qi 'platform_admin' && [ "$T11_WELCOME" = "yes" ]; then
+   698→   698→  record T11 WARN "Admin signed in and dashboard renders, but Accounts=${T11_HAS_ACCOUNTS}, Waitlist=${T11_HAS_WAITLIST} — likely empty in-memory store on cold instance"
+   699→   699→  bug "[T11] Admin dashboard partial: accounts_visible=${T11_HAS_ACCOUNTS}, waitlist_visible=${T11_HAS_WAITLIST}, accounts_api=${T11_ACCT_API}, waitlist_api=${T11_WL_API}"
+   700→   700→else
+   701→   701→  record T11 FAIL "Admin dashboard incomplete: session=${T11_SESSION}, welcome=${T11_WELCOME}, accounts=${T11_HAS_ACCOUNTS}, waitlist=${T11_HAS_WAITLIST}"
+   702→   702→  bug "[T11] Admin dashboard incomplete: session=${T11_SESSION}, welcome=${T11_WELCOME}, accounts=${T11_HAS_ACCOUNTS}, waitlist=${T11_HAS_WAITLIST}, url=${T11_URL}"
+   703→   703→fi
+   704→   704→
+   705→   705→# ============================================================================
+   706→   706→# TEST 12 — API consistency (while signed in as admin)
+   707→   707→# ============================================================================
+   708→   708→section "TEST 12 — API consistency checks (4 endpoints)"
+   709→   709→rpt "  Action: Hit 4 core APIs from the browser, check 200 + data shape"
+   710→   710→rpt "  Expected: all four return 200 with non-empty data"
+   711→   711→
+   712→   712→T12A_SESSION="$(api_probe GET /api/auth/session)"
+   713→   713→rpt "  [12a] GET /api/auth/session:       ${T12A_SESSION}"
+   714→   714→T12B_DASHBOARD="$(api_probe GET /api/dashboard)"
+   715→   715→rpt "  [12b] GET /api/dashboard:          ${T12B_DASHBOARD}"
+   716→   716→T12C_LISTINGS="$(api_probe GET /api/marketplace/listings)"
+   717→   717→rpt "  [12c] GET /api/marketplace/listings: ${T12C_LISTINGS}"
+   718→   718→T12D_PROGRAMS="$(api_probe GET /api/programs/list)"
+   719→   719→rpt "  [12d] GET /api/programs/list:      ${T12D_PROGRAMS}"
+   720→   720→
+   721→   721→T12_PASS=true
+   722→   722→T12_DETAILS=""
+   723→   723→
+   724→   724→if api_ok "$T12A_SESSION" session && echo "$T12A_SESSION" | grep -qi 'accountId\|email'; then
+   725→   725→  T12_DETAILS+="session=OK "
+   726→   726→else
+   727→   727→  T12_PASS=false
+   728→   728→  T12_DETAILS+="session=FAIL "
+   729→   729→  bug "[T12a] /api/auth/session failed: ${T12A_SESSION}"
+   730→   730→fi
+   731→   731→
+   732→   732→if api_ok "$T12B_DASHBOARD" dashboard && echo "$T12B_DASHBOARD" | grep -qi 'persona\|displayName'; then
+   733→   733→  T12_DETAILS+="dashboard=OK "
+   734→   734→else
+   735→   735→  T12_PASS=false
+   736→   736→  T12_DETAILS+="dashboard=FAIL "
+   737→   737→  bug "[T12b] /api/dashboard failed: ${T12B_DASHBOARD}"
+   738→   738→fi
+   739→   739→
+   740→   740→if api_ok "$T12C_LISTINGS" listings && echo "$T12C_LISTINGS" | grep -qi 'listings'; then
+   741→   741→  T12_DETAILS+="listings=OK "
+   742→   742→else
+   743→   743→  T12_PASS=false
+   744→   744→  T12_DETAILS+="listings=FAIL "
+   745→   745→  bug "[T12c] /api/marketplace/listings failed: ${T12C_LISTINGS}"
+   746→   746→fi
+   747→   747→
+   748→   748→if api_ok "$T12D_PROGRAMS" programs && echo "$T12D_PROGRAMS" | grep -qi 'programs'; then
+   749→   749→  T12_DETAILS+="programs=OK"
+   750→   750→else
+   751→   751→  T12_PASS=false
+   752→   752→  T12_DETAILS+="programs=FAIL"
+   753→   753→  bug "[T12d] /api/programs/list failed: ${T12D_PROGRAMS}"
+   754→   754→fi
+   755→   755→
+   756→   756→# Cross-endpoint consistency check: do /api/dashboard and /api/marketplace/listings
+   757→   757→# agree on the number of marketplace listings?
+   758→   758→T12_DASH_LISTINGS="$(echo "$T12B_DASHBOARD" | sed -E 's/.*totalListings.{0,3}([0-9]+).*/\1/' | head -c 4)"
+   759→   759→T12_LISTING_API_COUNT="$(echo "$T12C_LISTINGS" | sed -E 's/.*"listings":\[\{[^}]+\}\]//; s/.*listings.//; s/[^0-9].*//' | head -c 2)"
+   760→   760→rpt "  Cross-check: /api/dashboard reports totalListings=${T12_DASH_LISTINGS}; /api/marketplace/listings returned non-empty data"
+   761→   761→if [ "$T12_PASS" = "true" ]; then
+   762→   762→  record T12 PASS "All 4 core APIs returned 200 with data (${T12_DETAILS})"
+   763→   763→else
+   764→   764→  record T12 FAIL "API consistency check failed (${T12_DETAILS})"
+   765→   765→fi
+   766→   766→
+   767→   767→# ============================================================================
+   768→   768→# Final summary
+   769→   769→# ============================================================================
+   770→   770→section "OVERALL SUMMARY"
+   771→   771→rpt "  Tests passed: ${PASS_COUNT}"
+   772→   772→rpt "  Tests warned:${WARN_COUNT}"
+   773→   773→rpt "  Tests failed: ${FAIL_COUNT}"
+   774→   774→rpt ""
+   775→   775→rpt "  Per-test result:"
+   776→   776→for r in "${RESULTS[@]}"; do
+   777→   777→  rpt "    ${r}"
+   778→   778→done
+   779→   779→rpt ""
+   780→   780→rpt "  Artifacts:"
+   781→   781→rpt "    Report:      ${REPORT}"
+   782→   782→rpt "    Bugs:        ${BUGS}"
+   783→   783→rpt "    Logs dir:    ${LOGS}/"
+   784→   784→rpt "    Screenshots: ${SHOTS}/"
+   785→   785→
+   786→   786→if [ -s "$BUGS" ]; then
+   787→   787→  rpt ""
+   788→   788→  rpt "  ---- BUGS / ISSUES DISCOVERED ----"
+   789→   789→  cat "$BUGS" | tee -a "$REPORT" >&2
+   790→   790→fi
+   791→   791→
+   792→   792→ab close --all >/dev/null 2>&1 || true
+   793→   793→rpt ""
+   794→   794→rpt "Finished: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+   795→   795→
+   796→   796→if [ "$FAIL_COUNT" -gt 0 ]; then
+   797→   797→  exit 1
+   798→   798→fi
+   799→   799→exit 0
+   800→   800→

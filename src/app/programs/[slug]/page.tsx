@@ -62,19 +62,20 @@ export default function ProgramDetailPage() {
     if (!listing) return;
     setInstalling(true);
     try {
-      const res = await fetch(`/api/marketplace/listings/${listing.id}/install`, { method: "POST" });
-      const data = await res.json();
-      if (data.ok) {
+      // Retry on failure (handles cold-start session races on serverless).
+      let data: { ok: boolean; data?: { installCount: number }; error?: { message?: string } } | null = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await fetch(`/api/marketplace/listings/${listing.id}/install`, { method: "POST" });
+        data = await res.json();
+        if (data?.ok) break;
+        if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+      }
+      if (data?.ok) {
         setInstalled(true);
         toast({ title: "Program installed!", description: `${listing.name} is now in your health programs.` });
-        setListing({ ...listing, installCount: data.data.installCount });
+        setListing({ ...listing, installCount: data.data!.installCount });
       } else {
-        if (res.status === 401) {
-          toast({ title: "Sign in required", description: "Please sign in to install programs.", variant: "destructive" });
-          router.push("/sign-in");
-        } else {
-          toast({ title: "Failed", description: data.error?.message ?? "Could not install", variant: "destructive" });
-        }
+        toast({ title: "Failed", description: data?.error?.message ?? "Could not install. Please try again.", variant: "destructive" });
       }
     } catch {
       toast({ title: "Error", description: "Network error", variant: "destructive" });

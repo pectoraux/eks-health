@@ -1,0 +1,467 @@
+Eks-Health full re-audit
+Task ID:   reaudit-1
+Target:    https://eks-health.vercel.app
+Started:   2026-08-01T05:49:54Z
+Browser:   agent-browser 0.32.3
+
+
+================================================================
+TEST 1 — Landing page (verify 'Prevent disease' heading)
+================================================================
+  Action: Open https://eks-health.vercel.app/
+  Final URL: https://eks-health.vercel.app/
+  Landing headings: Prevent diseasebefore it happens. | One platform. Every health journey. | Built for every participant in the ecosystem | Built as a platform, not an app | Ready to transform preventive health?
+  Expected: heading containing 'Prevent disease'
+  Console errors: 0
+  RESULT: PASS — Landing rendered with 'Prevent disease' heading (url=https://eks-health.vercel.app/)
+
+================================================================
+TEST 2 — Sign in as ama@eks.health / DemoPass123! → /dashboard
+================================================================
+  Action: Open /sign-in, fill form, click Sign In
+  Expected: redirect to /dashboard, 'Welcome, Ama Serwaa' visible, ≥4 'Complete' buttons
+  Final URL: https://eks-health.vercel.app/dashboard
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+  Welcome Ama Serwaa:    yes
+  Today's Missions:      no
+  Habit Streaks:         no
+  Complete button count: 0
+  Console errors:        0
+  RESULT: FAIL — Sign-in or dashboard broken: url=https://eks-health.vercel.app/dashboard, welcome=yes, complete_btns=0, missions=no, habits=no
+
+================================================================
+TEST 3 — Dashboard → Marketplace header click (was FAIL: logs out)
+================================================================
+  Action: While on /dashboard, click 'Marketplace' in header
+  Expected: URL becomes /marketplace, 5 listing cards visible, 'Dashboard' header button present
+  Found Marketplace button ref=@e3, clicking
+  Final URL: https://eks-health.vercel.app/marketplace
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  Marketplace listing cards: 5
+  'Dashboard' header button: no (ref=none)
+  Console errors:            0
+  RESULT: FAIL — Marketplace nav broken: url=https://eks-health.vercel.app/marketplace, cards=5, dash_btn_ref=none, session=200|1|{\ok\:true,\data\:null}
+
+================================================================
+TEST 4 — Marketplace → click 'Cardio Care' card → /programs/cardio-care
+================================================================
+  Action: On /marketplace, click the 'Cardio Care' card
+  Expected: URL is /programs/cardio-care, heading 'Cardio Care', Install/Sign In to Install button visible
+  Final URL: https://eks-health.vercel.app/programs/cardio-care
+  'Program not found' visible: no
+  H1 on page:                 Cardio Care
+  Install/Sign In button:      yes
+  Body length:                532
+  Console errors:             0
+  RESULT: PASS — Program detail page rendered (h1=Cardio Care, install_btn=yes, url=https://eks-health.vercel.app/programs/cardio-care)
+
+================================================================
+TEST 5 — Navigate to /dashboard/timeline
+================================================================
+  Action: Open /dashboard/timeline
+  Expected: ≥5 timeline entries + filter buttons (All, Measurements, Missions, Competitions)
+  Final URL: https://eks-health.vercel.app/dashboard/timeline
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+  Timeline filter buttons: 4
+  Timeline entries:        12
+  Headings:                Health Timeline
+  Console errors:          0
+  RESULT: PASS — Timeline rendered with 12 entries and 4 filters
+
+================================================================
+TEST 6 — Navigate to /dashboard/settings
+================================================================
+  Action: Open /dashboard/settings
+  Expected: 6 cards (Profile, Security, Devices, Installed Programs, Privacy, Notifications) + 'Save Profile' button
+  Final URL: https://eks-health.vercel.app/dashboard/settings
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+  Settings cards:    6
+  Settings headings: 
+  'Save Profile' btn: yes (ref=- button "Save Profile" [disabled, ref=e7])
+  All 6 cards present: yes
+  Console errors:    0
+  RESULT: PASS — Settings rendered with 6 cards + Save Profile button
+
+================================================================
+TEST 7 — Navigate to /console
+================================================================
+  Action: Open /console
+  Expected: renders with nav items
+  Final URL: https://eks-health.vercel.app/console
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+  Console nav items: 20
+  Console headings:  Eks-Health Preventive Health Operating System
+  Console body len:  4006
+  Console errors:    0
+  RESULT: PASS — Console rendered (body=4006, nav=20)
+
+================================================================
+TEST 8 — Role switching
+================================================================
+  Action: Go to /dashboard; if role switcher present, click a different role
+  Expected: dashboard updates to reflect new activePersona
+  Participant dashboard role-switcher buttons: 0
+  No role switcher on participant dashboard (single persona). Signing in as admin (multi-persona).
+  Admin pre-switch session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\health_technician\,\de
+  WARN: no 'Developer' role button; trying 'Health Technician'
+  WARN: no Developer/Technician button; trying text click on 'Technician'
+  Admin post-switch session: 200|1|{\ok\:true,\data\:null}
+  RESULT: FAIL — Session became null after role switch (cold-start loss): 200|1|{\ok\:true,\data\:null}
+
+================================================================
+TEST 9 — Back navigation returns to dashboard (still logged in)
+================================================================
+  Action: From current page, use browser back; verify still logged in
+  Expected: land on /dashboard (or prior page) and NOT redirected to /sign-in
+  /dashboard URL: https://eks-health.vercel.app/sign-in
+  Forward URL (/marketplace): https://eks-health.vercel.app/marketplace
+  URL after browser back: https://eks-health.vercel.app/sign-in
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  RESULT: FAIL — Browser back redirected to /sign-in (session lost): url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+
+================================================================
+TEST 10 — Direct URL access to /dashboard/timeline
+================================================================
+  Action: Navigate directly to https://eks-health.vercel.app/dashboard/timeline
+  Expected: stay logged in (NOT redirected to /sign-in)
+  Final URL: https://eks-health.vercel.app/dashboard/timeline
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yds62zwhp8m7y6ijmmz9r\,\a
+  Timeline entries: 12
+  RESULT: PASS — Direct URL access kept user logged in (entries=12, url=https://eks-health.vercel.app/dashboard/timeline)
+
+================================================================
+TEST 11 — Admin dashboard (was FAIL: empty)
+================================================================
+  Action: Sign in as ekontetevi@gmail.com / Payswap123456, open /dashboard
+  Expected: dashboard shows accounts list + waitlist
+  Final URL: https://eks-health.vercel.app/dashboard
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  /api/dashboard: 401|0|Not authenticated
+  /api/identity/accounts: 200|1|[{\id\:\acc_0ms9xffnp4m00naj1giibva07\,\email\:\kwame@eks.health\,\displayName\:\Kwame Mensah\,\state\:\active\,\personas\:[\developer\],\activePersona\:\
+  /api/auth/waitlist: 200|1|[]
+  Welcome Platform Admin: yes
+  'Accounts' visible:     yes
+  'Waitlist' visible:     yes
+  Account rows:           0
+  Console errors:         0
+  RESULT: PASS — Admin dashboard renders Accounts + Waitlist sections (rows=0)
+
+================================================================
+TEST 12 — Interactive actions (mission complete, habit +, record dialog)
+================================================================
+  Action: Sign in as participant, click Complete, +habit, Record buttons
+  Expected: each action produces a visible UI change
+
+  [12a] Click a 'Complete' button on a mission
+    Complete buttons before: 0
+    Complete buttons after: 0
+    'Done/Completed' visible: no
+    [12a] FAIL — no UI change after Complete click (before=0, after=0, done=no)
+
+  [12b] Click a habit '+' button (verify streak number increases)
+    Streak numbers before: none
+    Habit + click result: none
+    Streak numbers after: none
+    [12b] FAIL — habit + click produced no observable change (before=none, after=none)
+
+  [12c] Click 'Record' button → verify measurement dialog opens; then close it
+    Dialogs before: 0
+    Dialogs after click: 0
+    Dialog has measurement form: no
+    [12c] FAIL — Record dialog did not open or no measurement form (before=0, after=0, form=no)
+  RESULT: FAIL — Interactive actions: 12a=FAIL, 12b=FAIL, 12c=FAIL
+
+================================================================
+TEST 13 — Program install (Cardio Care)
+================================================================
+  Action: Sign in as participant, go to /programs/cardio-care, click Install Program
+  Expected: success state appears (checkmark or 'Go to Dashboard' button)
+  Pre-install URL: https://eks-health.vercel.app/programs/cardio-care
+  Found Install button ref=@e8, clicking
+  Post-install URL: https://eks-health.vercel.app/sign-in
+  Success state visible:    no
+  'Go to Dashboard' button: no
+  Checkmark icons:          0
+  Toast/install text:       no
+  RESULT: FAIL — Install Program did not produce success state: success=no, dash_btn=no, checkmark=0, url=https://eks-health.vercel.app/sign-in
+
+================================================================
+TEST 14 — All 6 demo accounts sign in + dashboard renders
+================================================================
+  For each role: sign in, verify dashboard renders with role-specific content, sign out
+
+  --- Role: Participant (ama@eks.health) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\
+    /dashboard URL: https://eks-health.vercel.app/sign-in
+    Welcome visible: no
+    Body length:     464
+    Role-specific content (Participant): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Participant bounced to /sign-in
+
+  --- Role: Technician (clinic@eks.health) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xfflnaqzv0yadl0p25uyj\,\email\:\clinic@eks.health\,\displayName\:\Dr. Adwoa Boateng\,\active
+    /dashboard URL: https://eks-health.vercel.app/sign-in
+    Welcome visible: no
+    Body length:     464
+    Role-specific content (Technician): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Technician bounced to /sign-in
+
+  --- Role: Developer (kwame@eks.health) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffnp4m00naj1giibva07\,\email\:\kwame@eks.health\,\displayName\:\Kwame Mensah\,\activePerson
+    /dashboard URL: https://eks-health.vercel.app/sign-in
+    Welcome visible: no
+    Body length:     464
+    Role-specific content (Developer): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Developer bounced to /sign-in
+
+  --- Role: Researcher (research@eks.health) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffpmpoqf222fy3nrr4tb\,\email\:\research@eks.health\,\displayName\:\Prof. Yaw Asante\,\activ
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     185
+    Role-specific content (Researcher): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Researcher dashboard incomplete
+
+  --- Role: Org Admin (admin@eks.health) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffrmf97gebohb0rt7mcd\,\email\:\admin@eks.health\,\displayName\:\Org Administrator\,\activeP
+    /dashboard URL: https://eks-health.vercel.app/sign-in
+    Welcome visible: no
+    Body length:     464
+    Role-specific content (Org Admin): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Org Admin bounced to /sign-in
+
+  --- Role: Platform Admin (ekontetevi@gmail.com) ---
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     303
+    Role-specific content (Platform Admin): yes
+    Console errors:  0
+    ROLE RESULT: FAIL — Platform Admin dashboard incomplete
+
+  Per-role results:
+    FAIL|Participant|bounced to /sign-in
+    FAIL|Technician|bounced to /sign-in
+    FAIL|Developer|bounced to /sign-in
+    FAIL|Researcher|dashboard incomplete (welcome=yes, body=185)
+    FAIL|Org Admin|bounced to /sign-in
+    FAIL|Platform Admin|dashboard incomplete (welcome=yes, body=303)
+  RESULT: FAIL — One or more demo accounts failed — see per-role results
+
+================================================================
+OVERALL SUMMARY
+================================================================
+  Tests passed:  7
+  Tests warned:  0
+  Tests failed:  7
+
+  Per-test result:
+    T1|PASS|Landing rendered with 'Prevent disease' heading (url=https://eks-health.vercel.app/)
+    T2|FAIL|Sign-in or dashboard broken: url=https://eks-health.vercel.app/dashboard, welcome=yes, complete_btns=0, missions=no, habits=no
+    T3|FAIL|Marketplace nav broken: url=https://eks-health.vercel.app/marketplace, cards=5, dash_btn_ref=none, session=200|1|{\ok\:true,\data\:null}
+    T4|PASS|Program detail page rendered (h1=Cardio Care, install_btn=yes, url=https://eks-health.vercel.app/programs/cardio-care)
+    T5|PASS|Timeline rendered with 12 entries and 4 filters
+    T6|PASS|Settings rendered with 6 cards + Save Profile button
+    T7|PASS|Console rendered (body=4006, nav=20)
+    T8|FAIL|Session became null after role switch (cold-start loss): 200|1|{\ok\:true,\data\:null}
+    T9|FAIL|Browser back redirected to /sign-in (session lost): url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+    T10|PASS|Direct URL access kept user logged in (entries=12, url=https://eks-health.vercel.app/dashboard/timeline)
+    T11|PASS|Admin dashboard renders Accounts + Waitlist sections (rows=0)
+    T12|FAIL|Interactive actions: 12a=FAIL, 12b=FAIL, 12c=FAIL
+    T13|FAIL|Install Program did not produce success state: success=no, dash_btn=no, checkmark=0, url=https://eks-health.vercel.app/sign-in
+    T14|FAIL|One or more demo accounts failed — see per-role results
+
+  Per-role result (Test 14):
+    FAIL|Participant|bounced to /sign-in
+    FAIL|Technician|bounced to /sign-in
+    FAIL|Developer|bounced to /sign-in
+    FAIL|Researcher|dashboard incomplete (welcome=yes, body=185)
+    FAIL|Org Admin|bounced to /sign-in
+    FAIL|Platform Admin|dashboard incomplete (welcome=yes, body=303)
+
+  Artifacts:
+    Report:      /home/z/my-project/.zscripts/logs/reaudit-1/REPORT.txt
+    Bugs:        /home/z/my-project/.zscripts/logs/reaudit-1/BUGS.txt
+    Logs dir:    /home/z/my-project/.zscripts/logs/reaudit-1/
+    Screenshots: /home/z/my-project/.zscripts/screenshots/reaudit-1/
+
+  ---- BUGS / ISSUES DISCOVERED ----
+[T2] Sign-in/dashboard failed: url=https://eks-health.vercel.app/dashboard, welcome=yes, complete_btns=0, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9ycjdin918mc8gn88qsx96\,\a
+[T3] Dashboard→Marketplace failed: url=https://eks-health.vercel.app/marketplace, cards=5, dash_btn=no, session=200|1|{\ok\:true,\data\:null}
+[T8] Role switch session null: pre=200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\health_technician\,\de, post=200|1|{\ok\:true,\data\:null}
+[T9] Back nav redirected to /sign-in: url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+[T12a] Mission Complete click had no effect: before=0, after=0, done_visible=no
+[T12b] Habit + click had no effect: before=none, after=none, click=none
+[T12c] Record dialog did not open with form: before=0, after=0, form=no
+[T13] Install failed: success=no, dash_btn=no, checkmark=0, url=https://eks-health.vercel.app/sign-in
+[T14/Participant] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yfu83cd02pdl8gl8z16t9\,\a
+[T14/Technician] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xfflnaqzv0yadl0p25uyj\,\email\:\clinic@eks.health\,\displayName\:\Dr. Adwoa Boateng\,\activePersona\:\health_technician\,\personas\:[\health_technician\],\sessionId\:\ses_0ms9yg5
+[T14/Developer] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffnp4m00naj1giibva07\,\email\:\kwame@eks.health\,\displayName\:\Kwame Mensah\,\activePersona\:\developer\,\personas\:[\developer\],\sessionId\:\ses_0ms9ygh8cb9ey3cczy0fwxmnv\,\a
+[T14/Researcher] Dashboard incomplete: welcome=yes, body=185, url=https://eks-health.vercel.app/dashboard
+[T14/Org Admin] Bounced to /sign-in: session=200|1|{\accountId\:\acc_0ms9xffrmf97gebohb0rt7mcd\,\email\:\admin@eks.health\,\displayName\:\Org Administrator\,\activePersona\:\org_admin\,\personas\:[\org_admin\],\sessionId\:\ses_0ms9yh48kkesrf2cc34c9zin
+[T14/Platform Admin] Dashboard incomplete: welcome=yes, body=303, url=https://eks-health.vercel.app/dashboard
+
+Finished: 2026-08-01T05:54:02Z
+
+================================================================
+REAUDIT CONTINUATION — 2026-08-01T05:54:59Z
+================================================================
+
+
+================================================================
+RE-PROBE TEST 2 — Participant dashboard + /api/dashboard probe
+================================================================
+  Action: Sign in fresh, open /dashboard, then probe /api/dashboard directly
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+  /api/dashboard:    200|1|{\persona\:\participant\,\displayName\:\Ama Serwaa\,\email\:\ama@eks.health\,\missions\:{\stats\:{\total\:4,\active\:4,\completed\:0,\skipped\:0,\expired\:0,\completionRate\:0,\byCategory\:{\activity\
+  Welcome: yes | Missions: no | Habits: no | Complete buttons: 0
+  /api/dashboard ok flag: 1 (1=fixed, 0=still 401)
+  RESULT: WARN — /api/dashboard ok=1 but missions visible=no — partial
+
+================================================================
+RE-PROBE TEST 3 — Dashboard → Marketplace, header state
+================================================================
+  Action: On /dashboard (still signed in), click Marketplace; check header state
+  Final URL: https://eks-health.vercel.app/marketplace
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+  Header has 'Sign In':  no
+  Header has 'Dashboard': no
+  Listing cards: 5
+  RESULT: WARN — Marketplace URL ok but header ambiguous: signin=no, dashboard=no, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+
+================================================================
+RE-PROBE TEST 8 — Admin role switcher (find actual role buttons)
+================================================================
+  Action: Sign in as admin, snapshot /dashboard, list all role-switcher buttons
+  Pre-switch session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\pl
+  Role-switcher buttons found: Platform Admin, Health Technician, Developer, Researcher, Organization Admin, Marketplace Reviewer, Support Agent
+  Personas in session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\health_technicia
+  Clicked role button: Health Technician
+  Post-switch session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\health_technicia
+  activePersona before: platform_admin
+  activePersona after:  platform_admin
+  RESULT: FAIL — Role switch did not change persona: pre=platform_admin, post=platform_admin
+
+================================================================
+TEST 13 (redo) — Program install (Cardio Care)
+================================================================
+  Action: Sign in as participant, go to /programs/cardio-care, click Install Program
+  Expected: success state appears (checkmark or 'Go to Dashboard' button)
+  Pre-install URL: https://eks-health.vercel.app/programs/cardio-care
+  Install button ref: e8
+  Post-install URL: https://eks-health.vercel.app/sign-in
+  Success state visible:    no
+  'Go to Dashboard' button: no
+  Checkmark icons:          0
+  /api/marketplace/listings: 200|1|{\listings\:[{\id\:\lst_0ms9xfgo2aenfz68ury20ilu6\,\slug\:\cardio-care\,\n
+  Install-related buttons after click: 
+  RESULT: FAIL — Install Program did not produce success state: success=no, dash_btn=no, btn_state=, url=https://eks-health.vercel.app/sign-in
+
+================================================================
+TEST 14 — All 6 demo accounts sign in + dashboard renders
+================================================================
+  For each role: sign in, verify dashboard renders, sign out
+
+  --- Role: Participant (ama@eks.health) ---
+    api_sign_in result: 200|1|ama@eks.health|participant|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\
+    /api/dashboard: 200|1|{\persona\:\participant\,\displayName\:\Ama Serwaa\,\email\:\ama@eks.health\,\missions\:{\stats\:{\total\:4,\activ
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     176
+    Role-specific content: no
+    /api/dashboard ok: 1
+    ROLE RESULT: FAIL — Participant dashboard missing role-specific content
+
+  --- Role: Technician (clinic@eks.health) ---
+    api_sign_in result: 200|1|clinic@eks.health|health_technician|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xfflnaqzv0yadl0p25uyj\,\email\:\clinic@eks.health\,\displayName\:\Dr. Adwoa Boateng\,\active
+    /api/dashboard: 200|1|{\persona\:\health_technician\,\displayName\:\Dr. Adwoa Boateng\,\email\:\clinic@eks.health\,\technicians\:{\stats
+    /dashboard URL: https://eks-health.vercel.app/sign-in
+    Welcome visible: no
+    Body length:     464
+    Role-specific content: yes
+    /api/dashboard ok: 1
+    ROLE RESULT: FAIL — Technician bounced to /sign-in
+
+  --- Role: Developer (kwame@eks.health) ---
+    api_sign_in result: 200|1|kwame@eks.health|developer|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffnp4m00naj1giibva07\,\email\:\kwame@eks.health\,\displayName\:\Kwame Mensah\,\activePerson
+    /api/dashboard: 200|1|{\persona\:\developer\,\displayName\:\Kwame Mensah\,\email\:\kwame@eks.health\,\developer\:{\profiles\:[{\id\:\dev
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     3345
+    Role-specific content: yes
+    /api/dashboard ok: 1
+    ROLE RESULT: PASS — Developer dashboard rendered with role-specific content
+
+  --- Role: Researcher (research@eks.health) ---
+    api_sign_in result: 200|1|research@eks.health|researcher|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffpmpoqf222fy3nrr4tb\,\email\:\research@eks.health\,\displayName\:\Prof. Yaw Asante\,\activ
+    /api/dashboard: 200|1|{\persona\:\researcher\,\displayName\:\Prof. Yaw Asante\,\email\:\research@eks.health\,\research\:{\consentStats\:
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     185
+    Role-specific content: yes
+    /api/dashboard ok: 1
+    ROLE RESULT: WARN — Researcher dashboard short body
+
+  --- Role: Org Admin (admin@eks.health) ---
+    api_sign_in result: 200|1|admin@eks.health|org_admin|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffrmf97gebohb0rt7mcd\,\email\:\admin@eks.health\,\displayName\:\Org Administrator\,\activeP
+    /api/dashboard: 200|1|{\persona\:\org_admin\,\displayName\:\Org Administrator\,\email\:\admin@eks.health\,\population\:{\stats\:{\totalQ
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     199
+    Role-specific content: yes
+    /api/dashboard ok: 1
+    ROLE RESULT: WARN — Org Admin dashboard short body
+
+  --- Role: Platform Admin (ekontetevi@gmail.com) ---
+    api_sign_in result: 200|1|ekontetevi@gmail.com|platform_admin|
+    /api/auth/session: 200|1|{\accountId\:\acc_0ms9xffhsopj2g3zcifzhdzwz\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\
+    /api/dashboard: 200|1|{\persona\:\platform_admin\,\displayName\:\Platform Administrator\,\email\:\ekontetevi@gmail.com\,\platform\:{\acc
+    /dashboard URL: https://eks-health.vercel.app/dashboard
+    Welcome visible: yes
+    Body length:     303
+    Role-specific content: yes
+    /api/dashboard ok: 1
+    ROLE RESULT: WARN — Platform Admin dashboard short body
+
+  Per-role results (Test 14):
+    FAIL|Participant|dashboard rendered but no role-specific content (welcome=yes, body=176)
+    FAIL|Technician|bounced to /sign-in (session lost)
+    PASS|Developer|dashboard rendered (body=3345, role_kw=yes)
+    WARN|Researcher|dashboard rendered but body short (body=185)
+    WARN|Org Admin|dashboard rendered but body short (body=199)
+    WARN|Platform Admin|dashboard rendered but body short (body=303)
+  RESULT: FAIL — One or more demo accounts failed — see per-role results
+
+================================================================
+CONTINUATION SUMMARY
+================================================================
+  Tests passed:  0
+  Tests warned:  2
+  Tests failed:  3
+
+  Per-test result (continuation):
+    T2-RETEST|WARN|/api/dashboard ok=1 but missions visible=no — partial
+    T3-RETEST|WARN|Marketplace URL ok but header ambiguous: signin=no, dashboard=no, session=200|1|{\accountId\:\acc_0ms9xffjutr6g4e8hvlj9l592\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9yj03r496a3ie9ssb5jpa3\,\a
+    T8-RETEST|FAIL|Role switch did not change persona: pre=platform_admin, post=platform_admin
+    T13|FAIL|Install Program did not produce success state: success=no, dash_btn=no, btn_state=, url=https://eks-health.vercel.app/sign-in
+    T14|FAIL|One or more demo accounts failed — see per-role results
+
+  Per-role result (Test 14):
+    FAIL|Participant|dashboard rendered but no role-specific content (welcome=yes, body=176)
+    FAIL|Technician|bounced to /sign-in (session lost)
+    PASS|Developer|dashboard rendered (body=3345, role_kw=yes)
+    WARN|Researcher|dashboard rendered but body short (body=185)
+    WARN|Org Admin|dashboard rendered but body short (body=199)
+    WARN|Platform Admin|dashboard rendered but body short (body=303)
+
+Finished continuation: 2026-08-01T05:58:00Z

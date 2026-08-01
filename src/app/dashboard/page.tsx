@@ -36,16 +36,34 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [session, setSession] = useState<{ email: string; displayName: string; activePersona: string; personas: string[]; isDemo: boolean; isAdmin: boolean } | null>(null);
 
+  const [error, setError] = useState(false);
+
   const fetchData = useCallback(async () => {
-    const [sessRes, dashRes] = await Promise.all([
-      fetch("/api/auth/session", { cache: "no-store" }),
-      fetch("/api/dashboard", { cache: "no-store" }),
-    ]);
+    setError(false);
+    const sessRes = await fetch("/api/auth/session", { cache: "no-store" });
     const sessData = await sessRes.json();
-    const dashData = await dashRes.json();
     if (!sessData.ok || !sessData.data) { router.push("/sign-in"); return; }
     setSession(sessData.data);
-    if (dashData.ok) setData(dashData.data);
+
+    // Retry dashboard fetch up to 3 times on failure (handles cold-start races).
+    let dashData: { ok: boolean; data?: DashboardData; error?: { message?: string } } | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const dashRes = await fetch("/api/dashboard", { cache: "no-store" });
+        dashData = await dashRes.json();
+        if (dashData?.ok && dashData.data) {
+          setData(dashData.data);
+          return;
+        }
+      } catch {
+        // network error — retry
+      }
+      // Wait 500ms before retrying (exponential backoff would be better but
+      // this is simple and effective for the cold-start race).
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 500));
+    }
+    // All retries failed — show error state with retry button.
+    setError(true);
   }, [router]);
 
   useEffect(() => {
@@ -79,6 +97,8 @@ export default function DashboardPage() {
 
   const switchRole = async (persona: string) => {
     await fetch("/api/auth/switch-role", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ persona }) });
+    // Small delay to let the DB write-behind persist before re-fetching.
+    await new Promise((r) => setTimeout(r, 300));
     await fetchData();
   };
 
@@ -143,7 +163,17 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {data && <RoleContent persona={session.activePersona} data={data} onRefresh={refreshData} />}
+        {error ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-20">
+            <p className="text-sm text-muted-foreground">Unable to load dashboard data. This is usually a temporary server issue.</p>
+            <Button onClick={refreshData} disabled={refreshing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${refreshing ? "animate-spin" : ""}`} />
+              {refreshing ? "Retrying..." : "Retry"}
+            </Button>
+          </div>
+        ) : data ? (
+          <RoleContent persona={session.activePersona} data={data} onRefresh={refreshData} />
+        ) : null}
       </main>
 
       <footer className="border-t border-border mt-auto">

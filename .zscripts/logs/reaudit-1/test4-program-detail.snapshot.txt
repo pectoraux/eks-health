@@ -1,0 +1,7 @@
+- button "Eks-Health" [ref=e2]
+- button "Dashboard" [ref=e3]
+- button "Back to Marketplace" [ref=e4]
+- heading "Cardio Care" [level=1, ref=e5]
+- heading "Get Started" [level=3, ref=e6]
+- button "Install Program" [ref=e7]
+- region "Notifications (F8)" [ref=e1]
