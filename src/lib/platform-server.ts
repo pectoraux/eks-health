@@ -247,11 +247,8 @@ export function ensurePlatform() {
     seedDeveloperDemoData();
     bootMarketplace();
     bootResearch();
-    seedResearchDemoData();
     bootOrchestrator();
-    seedOrchestratorDemoData();
     bootPopulation();
-    seedPopulationDemoData();
     _booted = true;
   }
   return { kernel: kernelInfo(), identity: identityInfo(), programs: programsInfo(), health: healthInfo(), technicians: techniciansInfo(), competitions: competitionsInfo(), missions: missionsInfo(), developer: developerInfo(), marketplace: marketplaceInfo(), research: researchInfo(), orchestrator: orchestratorInfo(), population: populationInfo() };
@@ -281,11 +278,13 @@ export function ensureHydrated(): Promise<void> {
         await seedMissionDemoData();
         await seedCompetitionDemoData();
         await seedMarketplaceDemoData();
+        // Non-critical seeds (research, population, orchestrator) —
+        // wrapped in try/catch so they don't block sign-in if they fail.
+        try { seedResearchDemoData(); } catch { /* non-critical */ }
+        try { seedOrchestratorDemoData(); } catch { /* non-critical */ }
+        try { seedPopulationDemoData(); } catch { /* non-critical */ }
       } catch (err) {
         // CRITICAL: reset the promise so the next call retries.
-        // If we don't do this, a transient DB error permanently blinds
-        // this serverless instance — all subsequent getSession() calls
-        // will return null (cached failed promise resolves to nothing).
         _hydratePromise = null;
         console.error("[platform] hydration failed (will retry on next call):", err);
         throw err;
