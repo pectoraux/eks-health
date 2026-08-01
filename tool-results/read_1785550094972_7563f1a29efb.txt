@@ -1,0 +1,892 @@
+     1→/**
+     2→ * Eks-Health Identity — Security Monitoring
+     3→ *
+     4→ * Real anomaly detection across the identity platform:
+     5→ *   - impossible travel (REAL haversine distance vs time-delta)
+     6→ *   - credential stuffing (burst of failed logins across accounts from one IP)
+     7→ *   - abnormal API usage (per-program rate spike)
+     8→ *   - permission abuse (repeated denials for the same principal)
+     9→ *   - extension/program abuse (call-volume anomaly)
+    10→ *   - data exfiltration (per-account per-hour data volume)
+    11→ *   - new high-risk device
+    12→ *   - repeated MFA failure
+    13→ *   - unusual data volume (per-account daily baseline deviation)
+    14→ *
+    15→ * Confirmed anomalies become SecurityIncidents. Risk scores aggregate per
+    16→ * account from recent anomalies. Security notifications dispatch via the
+    17→ * kernel notification service.
+    18→ *
+    19→ * No external deps beyond node:crypto.
+    20→ */
+    21→
+    22→import "server-only";
+    23→import { createHash } from "node:crypto";
+    24→import {
+    25→  type AccountId,
+    26→  type IncidentId,
+    27→  type Principal,
+    28→  type Persona,
+    29→  IdentityError,
+    30→  IDENTITY_EVENTS,
+    31→  asIncidentId,
+    32→} from "../core";
+    33→import { getEventBus, buildEvent, generateId, getClock } from "@/kernel";
+    34→import type { Brand } from "@/kernel";
+    35→
+    36→// ---------------------------------------------------------------------------
+    37→// Branded ids
+    38→// ---------------------------------------------------------------------------
+    39→
+    40→export type AnomalyId = Brand<string, "AnomalyId">;
+    41→export type SecurityNotificationId = Brand<string, "SecurityNotificationId">;
+    42→
+    43→function asAnomalyId(s: string): AnomalyId { return s as AnomalyId; }
+    44→function asSecurityNotificationId(s: string): SecurityNotificationId { return s as SecurityNotificationId; }
+    45→
+    46→// ---------------------------------------------------------------------------
+    47→// Severity & status
+    48→// ---------------------------------------------------------------------------
+    49→
+    50→export type IncidentSeverity = "low" | "medium" | "high" | "critical";
+    51→export type IncidentStatus = "open" | "investigating" | "contained" | "resolved" | "false_positive";
+    52→
+    53→// ---------------------------------------------------------------------------
+    54→// Geo + haversine (REAL great-circle distance)
+    55→// ---------------------------------------------------------------------------
+    56→
+    57→export interface GeoPoint {
+    58→  readonly lat: number;
+    59→  readonly lng: number;
+    60→}
+    61→
+    62→const EARTH_RADIUS_KM = 6371;
+    63→
+    64→function toRad(deg: number): number {
+    65→  return (deg * Math.PI) / 180;
+    66→}
+    67→
+    68→/**
+    69→ * Compute the great-circle distance between two lat/lng points using the
+    70→ * haversine formula. Returns kilometers.
+    71→ */
+    72→export function haversineKm(a: GeoPoint, b: GeoPoint): number {
+    73→  const dLat = toRad(b.lat - a.lat);
+    74→  const dLng = toRad(b.lng - a.lng);
+    75→  const lat1 = toRad(a.lat);
+    76→  const lat2 = toRad(b.lat);
+    77→  const h =
+    78→    Math.sin(dLat / 2) ** 2 +
+    79→    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    80→  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)));
+    81→}
+    82→
+    83→// ---------------------------------------------------------------------------
+    84→// Anomaly + incident types
+    85→// ---------------------------------------------------------------------------
+    86→
+    87→export type AnomalyType =
+    88→  | "impossible_travel"
+    89→  | "credential_stuffing"
+    90→  | "abnormal_api_usage"
+    91→  | "permission_abuse"
+    92→  | "extension_abuse"
+    93→  | "data_exfiltration"
+    94→  | "new_device_high_risk"
+    95→  | "repeated_mfa_failure"
+    96→  | "unusual_data_volume";
+    97→
+    98→export interface Anomaly {
+    99→  readonly id: AnomalyId;
+   100→  readonly type: AnomalyType;
+   101→  readonly severity: IncidentSeverity;
+   102→  readonly detectedAt: string;
+   103→  readonly accountId?: AccountId;
+   104→  readonly principalId?: string;
+   105→  readonly programId?: string;
+   106→  readonly ip?: string;
+   107→  readonly country?: string;
+   108→  readonly description: string;
+   109→  readonly evidence: Record<string, unknown>;
+   110→  readonly incidentId?: IncidentId;
+   111→}
+   112→
+   113→export interface SecurityIncident {
+   114→  readonly id: IncidentId;
+   115→  readonly title: string;
+   116→  readonly description: string;
+   117→  readonly severity: IncidentSeverity;
+   118→  readonly status: IncidentStatus;
+   119→  readonly type: AnomalyType | "composite";
+   120→  readonly openedAt: string;
+   121→  readonly updatedAt: string;
+   122→  readonly acknowledgedBy?: string;
+   123→  readonly acknowledgedAt?: string;
+   124→  readonly resolvedBy?: string;
+   125→  readonly resolvedAt?: string;
+   126→  readonly resolution?: string;
+   127→  readonly relatedAnomalies: AnomalyId[];
+   128→  readonly affectedAccounts: AccountId[];
+   129→  readonly affectedPrograms: string[];
+   130→  readonly metadata?: Record<string, unknown>;
+   131→}
+   132→
+   133→export interface BehavioralBaseline {
+   134→  readonly accountId: AccountId;
+   135→  readonly typicalCountries: string[];
+   136→  readonly typicalIpPrefixes: string[]; // /24 prefixes
+   137→  readonly typicalDeviceIds: string[];
+   138→  readonly avgApiCallsPerMinute: number;
+   139→  readonly avgDataVolumeMbPerHour: number;
+   140→  readonly typicalActiveHours: [number, number]; // hour-of-day range
+   141→  readonly updatedAt: string;
+   142→}
+   143→
+   144→export interface SecurityNotification {
+   145→  readonly id: SecurityNotificationId;
+   146→  readonly accountId: AccountId;
+   147→  readonly type: AnomalyType | "incident" | "security_alert";
+   148→  readonly title: string;
+   149→  readonly message: string;
+   150→  readonly severity: IncidentSeverity;
+   151→  readonly createdAt: string;
+   152→  readonly read: boolean;
+   153→  readonly deliveredVia: ("in_app" | "email" | "sms" | "push")[];
+   154→  readonly incidentId?: IncidentId;
+   155→  readonly payload?: Record<string, unknown>;
+   156→}
+   157→
+   158→// ---------------------------------------------------------------------------
+   159→// Event inputs
+   160→// ---------------------------------------------------------------------------
+   161→
+   162→export interface AuthAttemptEvent {
+   163→  readonly accountId: AccountId;
+   164→  readonly principalId?: string;
+   165→  readonly timestamp?: string;
+   166→  readonly ip: string;
+   167→  readonly country?: string;
+   168→  readonly location?: GeoPoint;
+   169→  readonly userAgent?: string;
+   170→  readonly deviceId?: string;
+   171→  readonly deviceTrusted?: boolean;
+   172→  readonly success: boolean;
+   173→  readonly mfaUsed?: boolean;
+   174→  readonly mfaSuccess?: boolean;
+   175→  readonly persona?: Persona;
+   176→}
+   177→
+   178→export interface ApiCallEvent {
+   179→  readonly principal?: Principal;
+   180→  readonly accountId?: AccountId;
+   181→  readonly programId: string;
+   182→  readonly timestamp?: string;
+   183→  readonly ip?: string;
+   184→  readonly endpoint: string;
+   185→  readonly latencyMs?: number;
+   186→  readonly status: number;
+   187→}
+   188→
+   189→export interface DataAccessEvent {
+   190→  readonly principal?: Principal;
+   191→  readonly accountId?: AccountId;
+   192→  readonly programId: string;
+   193→  readonly timestamp?: string;
+   194→  readonly fields: string[];
+   195→  readonly bytes: number;
+   196→  readonly deniedFields?: string[];
+   197→}
+   198→
+   199→// ---------------------------------------------------------------------------
+   200→// Thresholds
+   201→// ---------------------------------------------------------------------------
+   202→
+   203→export const ANOMALY_THRESHOLDS = {
+   204→  impossible_travel_speed_kmh: 900,
+   205→  impossible_travel_min_distance_km: 200,
+   206→  credential_stuffing_burst: 10,
+   207→  credential_stuffing_window_min: 5,
+   208→  api_calls_per_min: 600,
+   209→  api_calls_per_min_per_program: 300,
+   210→  data_volume_mb_per_hour: 500,
+   211→  data_volume_mb_per_hour_per_account: 200,
+   212→  mfa_failures: 5,
+   213→  mfa_failures_window_min: 15,
+   214→  new_device_risk_contribution: 50,
+   215→  permission_denial_threshold: 5,
+   216→  permission_denial_window_min: 10,
+   217→  unusual_data_volume_baseline_deviation: 3, // 3x baseline
+   218→  event_ring_buffer_cap: 10_000,
+   219→} as const;
+   220→
+   221→// ---------------------------------------------------------------------------
+   222→// Events
+   223→// ---------------------------------------------------------------------------
+   224→
+   225→export const MONITORING_EVENTS = {
+   226→  incidentCreated: IDENTITY_EVENTS.incidentCreated, // "eks.identity.security.incident_created"
+   227→  anomalyDetected: "eks.identity.security.anomaly_detected",
+   228→  notificationSent: "eks.identity.security.notification_sent",
+   229→} as const;
+   230→
+   231→// ---------------------------------------------------------------------------
+   232→// Risk scoring
+   233→// ---------------------------------------------------------------------------
+   234→
+   235→const SEVERITY_WEIGHT: Record<IncidentSeverity, number> = {
+   236→  low: 10,
+   237→  medium: 25,
+   238→  high: 50,
+   239→  critical: 80,
+   240→};
+   241→
+   242→const RISK_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+   243→
+   244→// ---------------------------------------------------------------------------
+   245→// Security monitor
+   246→// ---------------------------------------------------------------------------
+   247→
+   248→export class SecurityMonitor {
+   249→  private readonly authEvents: AuthAttemptEvent[] = [];
+   250→  private readonly apiEvents: ApiCallEvent[] = [];
+   251→  private readonly dataEvents: DataAccessEvent[] = [];
+   252→  private readonly incidents = new Map<IncidentId, SecurityIncident>();
+   253→  private readonly anomalies: Anomaly[] = [];
+   254→  private readonly notifications = new Map<AccountId, SecurityNotification[]>();
+   255→  private readonly baselines = new Map<AccountId, BehavioralBaseline>();
+   256→  private readonly lastLocation = new Map<AccountId, { lat: number; lng: number; at: number; ip: string }>();
+   257→  private readonly mfaFailures = new Map<AccountId, { count: number; firstAt: number }>();
+   258→  private readonly permissionDenials = new Map<string, { count: number; firstAt: number }>();
+   259→  private readonly programApiBuckets = new Map<string, Map<number, number>>(); // programId -> minute -> count
+   260→  private readonly accountDataBuckets = new Map<AccountId, Map<number, number>>(); // accountId -> hour -> bytes
+   261→
+   262→  /**
+   263→   * Record an authentication attempt. Feeds impossible-travel, credential-
+   264→   * stuffing, MFA-failure, and new-device detection.
+   265→   */
+   266→  recordAuthAttempt(event: AuthAttemptEvent): void {
+   267→    this.pushCapped(this.authEvents, event);
+   268→    const ts = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+   269→
+   270→    // Impossible-travel: same account, distant location, fast re-auth.
+   271→    if (event.location && event.success) {
+   272→      const prev = this.lastLocation.get(event.accountId);
+   273→      if (prev) {
+   274→        const distanceKm = haversineKm(prev, event.location);
+   275→        const dtHours = Math.max(0.001, (ts - prev.at) / (1000 * 60 * 60));
+   276→        const speedKmh = distanceKm / dtHours;
+   277→        if (
+   278→          distanceKm >= ANOMALY_THRESHOLDS.impossible_travel_min_distance_km &&
+   279→          speedKmh > ANOMALY_THRESHOLDS.impossible_travel_speed_kmh
+   280→        ) {
+   281→          this.recordAnomaly({
+   282→            type: "impossible_travel",
+   283→            severity: "critical",
+   284→            accountId: event.accountId,
+   285→            principalId: event.principalId,
+   286→            ip: event.ip,
+   287→            country: event.country,
+   288→            description: `Impossible travel: ${distanceKm.toFixed(0)} km in ${(dtHours * 60).toFixed(1)} min (${speedKmh.toFixed(0)} km/h).`,
+   289→            evidence: {
+   290→              from: { lat: prev.lat, lng: prev.lng, ip: prev.ip, at: new Date(prev.at).toISOString() },
+   291→              to: { lat: event.location.lat, lng: event.location.lng, ip: event.ip, at: new Date(ts).toISOString() },
+   292→              distanceKm,
+   293→              speedKmh,
+   294→            },
+   295→          });
+   296→        }
+   297→      }
+   298→      this.lastLocation.set(event.accountId, {
+   299→        lat: event.location.lat,
+   300→        lng: event.location.lng,
+   301→        at: ts,
+   302→        ip: event.ip,
+   303→      });
+   304→    }
+   305→
+   306→    // Credential stuffing: N failed logins from different accounts from the same IP
+   307→    if (!event.success) {
+   308→      const windowMs = ANOMALY_THRESHOLDS.credential_stuffing_window_min * 60 * 1000;
+   309→      const recent = this.authEvents.filter(
+   310→        (e) =>
+   311→          !e.success &&
+   312→          e.ip === event.ip &&
+   313→          new Date(e.timestamp ?? getClock().iso()).getTime() > ts - windowMs,
+   314→      );
+   315→      const uniqueAccounts = new Set(recent.map((e) => e.accountId));
+   316→      if (uniqueAccounts.size >= ANOMALY_THRESHOLDS.credential_stuffing_burst) {
+   317→        this.recordAnomaly({
+   318→          type: "credential_stuffing",
+   319→          severity: "high",
+   320→          ip: event.ip,
+   321→          country: event.country,
+   322→          description: `Credential stuffing: ${uniqueAccounts.size} distinct accounts failed from ${event.ip} in ${ANOMALY_THRESHOLDS.credential_stuffing_window_min} min.`,
+   323→          evidence: {
+   324→            ip: event.ip,
+   325→            accounts: [...uniqueAccounts],
+   326→            attempts: recent.length,
+   327→            windowMinutes: ANOMALY_THRESHOLDS.credential_stuffing_window_min,
+   328→          },
+   329→        });
+   330→      }
+   331→    }
+   332→
+   333→    // MFA failures per account
+   334→    if (event.mfaUsed && event.mfaSuccess === false) {
+   335→      const windowMs = ANOMALY_THRESHOLDS.mfa_failures_window_min * 60 * 1000;
+   336→      const cur = this.mfaFailures.get(event.accountId);
+   337→      if (!cur || ts - cur.firstAt > windowMs) {
+   338→        this.mfaFailures.set(event.accountId, { count: 1, firstAt: ts });
+   339→      } else {
+   340→        this.mfaFailures.set(event.accountId, { count: cur.count + 1, firstAt: cur.firstAt });
+   341→      }
+   342→      const updated = this.mfaFailures.get(event.accountId)!;
+   343→      if (updated.count >= ANOMALY_THRESHOLDS.mfa_failures) {
+   344→        this.recordAnomaly({
+   345→          type: "repeated_mfa_failure",
+   346→          severity: "high",
+   347→          accountId: event.accountId,
+   348→          principalId: event.principalId,
+   349→          ip: event.ip,
+   350→          description: `Repeated MFA failure: ${updated.count} failures in ${ANOMALY_THRESHOLDS.mfa_failures_window_min} min.`,
+   351→          evidence: { count: updated.count, windowMinutes: ANOMALY_THRESHOLDS.mfa_failures_window_min },
+   352→        });
+   353→      }
+   354→    }
+   355→
+   356→    // New device high risk
+   357→    if (event.deviceId && event.deviceTrusted === false && event.success) {
+   358→      this.recordAnomaly({
+   359→        type: "new_device_high_risk",
+   360→        severity: "medium",
+   361→        accountId: event.accountId,
+   362→        principalId: event.principalId,
+   363→        ip: event.ip,
+   364→        country: event.country,
+   365→        description: `Sign-in from new untrusted device ${event.deviceId}.`,
+   366→        evidence: { deviceId: event.deviceId, ip: event.ip },
+   367→      });
+   368→    }
+   369→  }
+   370→
+   371→  /** Record an API call. Feeds abnormal-usage detection. */
+   372→  recordApiCall(event: ApiCallEvent): void {
+   373→    this.pushCapped(this.apiEvents, event);
+   374→    const ts = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+   375→    const minute = Math.floor(ts / 60_000);
+   376→    const buckets = this.programApiBuckets.get(event.programId) ?? new Map<number, number>();
+   377→    buckets.set(minute, (buckets.get(minute) ?? 0) + 1);
+   378→    this.programApiBuckets.set(event.programId, buckets);
+   379→
+   380→    // Per-minute per-program spike
+   381→    const count = buckets.get(minute) ?? 0;
+   382→    if (count === ANOMALY_THRESHOLDS.api_calls_per_min_per_program) {
+   383→      // fire once when threshold first crossed this minute
+   384→      this.recordAnomaly({
+   385→        type: "abnormal_api_usage",
+   386→        severity: "high",
+   387→        programId: event.programId,
+   388→        accountId: event.accountId,
+   389→        ip: event.ip,
+   390→        description: `Program ${event.programId} exceeded ${ANOMALY_THRESHOLDS.api_calls_per_min_per_program} calls/min.`,
+   391→        evidence: { programId: event.programId, callsThisMinute: count, minute: new Date(minute * 60_000).toISOString() },
+   392→      });
+   393→    } else if (count === ANOMALY_THRESHOLDS.api_calls_per_min) {
+   394→      this.recordAnomaly({
+   395→        type: "abnormal_api_usage",
+   396→        severity: "critical",
+   397→        programId: event.programId,
+   398→        accountId: event.accountId,
+   399→        ip: event.ip,
+   400→        description: `Platform-wide API spike: ${count} calls/min from program ${event.programId}.`,
+   401→        evidence: { programId: event.programId, callsThisMinute: count },
+   402→      });
+   403→    }
+   404→  }
+   405→
+   406→  /** Record a data access. Feeds exfiltration + unusual-volume detection. */
+   407→  recordDataAccess(event: DataAccessEvent): void {
+   408→    this.pushCapped(this.dataEvents, event);
+   409→    const ts = event.timestamp ? new Date(event.timestamp).getTime() : Date.now();
+   410→    const hour = Math.floor(ts / (60 * 60 * 1000));
+   411→    if (event.accountId) {
+   412→      const buckets = this.accountDataBuckets.get(event.accountId) ?? new Map<number, number>();
+   413→      buckets.set(hour, (buckets.get(hour) ?? 0) + event.bytes);
+   414→      this.accountDataBuckets.set(event.accountId, buckets);
+   415→      const totalMb = (buckets.get(hour) ?? 0) / (1024 * 1024);
+   416→      // Per-account hourly threshold
+   417→      if (totalMb >= ANOMALY_THRESHOLDS.data_volume_mb_per_hour_per_account && event.bytes > 0) {
+   418→        // fire once when threshold first crossed this hour for this account
+   419→        const justCrossed = totalMb - event.bytes / (1024 * 1024) < ANOMALY_THRESHOLDS.data_volume_mb_per_hour_per_account;
+   420→        if (justCrossed) {
+   421→          this.recordAnomaly({
+   422→            type: "data_exfiltration",
+   423→            severity: "critical",
+   424→            accountId: event.accountId,
+   425→            programId: event.programId,
+   426→            description: `Account ${event.accountId} downloaded ${totalMb.toFixed(0)} MB in the last hour.`,
+   427→            evidence: { accountId: event.accountId, mbThisHour: totalMb, programId: event.programId },
+   428→          });
+   429→        }
+   430→      }
+   431→      // Baseline deviation
+   432→      const baseline = this.baselines.get(event.accountId);
+   433→      if (baseline && baseline.avgDataVolumeMbPerHour > 0) {
+   434→        if (totalMb >= baseline.avgDataVolumeMbPerHour * ANOMALY_THRESHOLDS.unusual_data_volume_baseline_deviation) {
+   435→          this.recordAnomaly({
+   436→            type: "unusual_data_volume",
+   437→            severity: "medium",
+   438→            accountId: event.accountId,
+   439→            programId: event.programId,
+   440→            description: `Account ${event.accountId} data volume ${totalMb.toFixed(0)} MB/hr is ${ANOMALY_THRESHOLDS.unusual_data_volume_baseline_deviation}x baseline (${baseline.avgDataVolumeMbPerHour} MB/hr).`,
+   441→            evidence: { mbThisHour: totalMb, baselineMbPerHour: baseline.avgDataVolumeMbPerHour },
+   442→          });
+   443→        }
+   444→      }
+   445→    }
+   446→    // Per-platform threshold
+   447→    if (event.bytes > 0) {
+   448→      const platformTotal = [...this.accountDataBuckets.values()].reduce(
+   449→        (sum, buckets) => sum + (buckets.get(hour) ?? 0),
+   450→        0,
+   451→      ) / (1024 * 1024);
+   452→      if (platformTotal >= ANOMALY_THRESHOLDS.data_volume_mb_per_hour) {
+   453→        // Only fire once per hour per program (avoid spam)
+   454→        const key = `${event.programId}:${hour}`;
+   455→        if (!this._firedPlatformExfil.has(key)) {
+   456→          this._firedPlatformExfil.add(key);
+   457→          this.recordAnomaly({
+   458→            type: "data_exfiltration",
+   459→            severity: "high",
+   460→            programId: event.programId,
+   461→            description: `Platform data volume ${platformTotal.toFixed(0)} MB in the last hour exceeded the ${ANOMALY_THRESHOLDS.data_volume_mb_per_hour} MB threshold.`,
+   462→            evidence: { platformMbThisHour: platformTotal },
+   463→          });
+   464→        }
+   465→      }
+   466→    }
+   467→  }
+   468→  private readonly _firedPlatformExfil = new Set<string>();
+   469→
+   470→  /** Record permission abuse: caller denies a permission for a principal. */
+   471→  recordPermissionDenial(opts: {
+   472→    readonly principalId: string;
+   473→    readonly permission: string;
+   474→    readonly accountId?: AccountId;
+   475→    readonly timestamp?: string;
+   476→  }): void {
+   477→    const ts = opts.timestamp ? new Date(opts.timestamp).getTime() : Date.now();
+   478→    const key = `${opts.principalId}:${opts.permission}`;
+   479→    const windowMs = ANOMALY_THRESHOLDS.permission_denial_window_min * 60 * 1000;
+   480→    const cur = this.permissionDenials.get(key);
+   481→    if (!cur || ts - cur.firstAt > windowMs) {
+   482→      this.permissionDenials.set(key, { count: 1, firstAt: ts });
+   483→    } else {
+   484→      this.permissionDenials.set(key, { count: cur.count + 1, firstAt: cur.firstAt });
+   485→    }
+   486→    const updated = this.permissionDenials.get(key)!;
+   487→    if (updated.count >= ANOMALY_THRESHOLDS.permission_denial_threshold) {
+   488→      this.recordAnomaly({
+   489→        type: "permission_abuse",
+   490→        severity: "medium",
+   491→        principalId: opts.principalId,
+   492→        accountId: opts.accountId,
+   493→        description: `Principal ${opts.principalId} denied permission ${opts.permission} ${updated.count} times in ${ANOMALY_THRESHOLDS.permission_denial_window_min} min.`,
+   494→        evidence: { principalId: opts.principalId, permission: opts.permission, count: updated.count },
+   495→      });
+   496→    }
+   497→  }
+   498→
+   499→  /** Core: record an anomaly. */
+   500→  private recordAnomaly(input: Omit<Anomaly, "id" | "detectedAt" | "incidentId">): Anomaly {
+   501→    const anomaly: Anomaly = {
+   502→      id: asAnomalyId(generateId("anm_")),
+   503→      detectedAt: getClock().iso(),
+   504→      ...input,
+   505→    };
+   506→    this.anomalies.push(anomaly);
+   507→    void getEventBus().publish(
+   508→      buildEvent(
+   509→        MONITORING_EVENTS.anomalyDetected,
+   510→        {
+   511→          anomalyId: anomaly.id,
+   512→          type: anomaly.type,
+   513→          severity: anomaly.severity,
+   514→          accountId: anomaly.accountId,
+   515→          principalId: anomaly.principalId,
+   516→          programId: anomaly.programId,
+   517→          description: anomaly.description,
+   518→        },
+   519→        {},
+   520→        "domain",
+   521→      ),
+   522→    );
+   523→    return anomaly;
+   524→  }
+   525→
+   526→  /**
+   527→   * Run all detectors over the recent event window. Creates SecurityIncidents
+   528→   * for confirmed anomalies (high/critical severity, or any anomaly with an
+   529→   * affected account). Returns the newly-created incidents.
+   530→   */
+   531→  detect(): SecurityIncident[] {
+   532→    const newIncidents: SecurityIncident[] = [];
+   533→    const since = Date.now() - RISK_WINDOW_MS;
+   534→    const recent = this.anomalies.filter((a) => new Date(a.detectedAt).getTime() >= since && !a.incidentId);
+   535→    // Group by (type, accountId|programId) so related anomalies fold into one incident
+   536→    const groups = new Map<string, Anomaly[]>();
+   537→    for (const a of recent) {
+   538→      const key = `${a.type}:${a.accountId ?? a.programId ?? a.principalId ?? "global"}`;
+   539→      const list = groups.get(key) ?? [];
+   540→      list.push(a);
+   541→      groups.set(key, list);
+   542→    }
+   543→    for (const [, list] of groups) {
+   544→      const worst = list.reduce<Anomaly>(
+   545→        (acc, a) => (SEVERITY_WEIGHT[a.severity] > SEVERITY_WEIGHT[acc.severity] ? a : acc),
+   546→        list[0],
+   547→      );
+   548→      // Only open incidents for medium+ severity OR any anomaly touching an account
+   549→      if (SEVERITY_WEIGHT[worst.severity] < SEVERITY_WEIGHT.medium && !worst.accountId) continue;
+   550→      const incident = this.createIncident({
+   551→        title: `${worst.type.replace(/_/g, " ")} detected`,
+   552→        description: worst.description,
+   553→        severity: worst.severity,
+   554→        type: worst.type,
+   555→        relatedAnomalyIds: list.map((a) => a.id),
+   556→        affectedAccounts: [...new Set(list.map((a) => a.accountId).filter((x): x is AccountId => !!x))],
+   557→        affectedPrograms: [...new Set(list.map((a) => a.programId).filter((x): x is string => !!x))],
+   558→        metadata: { evidence: worst.evidence },
+   559→      });
+   560→      // Link anomalies back to the incident
+   561→      for (const a of list) {
+   562→        const idx = this.anomalies.findIndex((x) => x.id === a.id);
+   563→        if (idx >= 0) this.anomalies[idx] = { ...this.anomalies[idx], incidentId: incident.id };
+   564→      }
+   565→      newIncidents.push(incident);
+   566→    }
+   567→    return newIncidents;
+   568→  }
+   569→
+   570→  createIncident(input: {
+   571→    readonly title: string;
+   572→    readonly description: string;
+   573→    readonly severity: IncidentSeverity;
+   574→    readonly type: AnomalyType | "composite";
+   575→    readonly relatedAnomalyIds?: AnomalyId[];
+   576→    readonly affectedAccounts?: AccountId[];
+   577→    readonly affectedPrograms?: string[];
+   578→    readonly metadata?: Record<string, unknown>;
+   579→  }): SecurityIncident {
+   580→    const now = getClock().iso();
+   581→    const incident: SecurityIncident = {
+   582→      id: asIncidentId(generateId("inc_")),
+   583→      title: input.title,
+   584→      description: input.description,
+   585→      severity: input.severity,
+   586→      status: "open",
+   587→      type: input.type,
+   588→      openedAt: now,
+   589→      updatedAt: now,
+   590→      relatedAnomalies: input.relatedAnomalyIds ?? [],
+   591→      affectedAccounts: input.affectedAccounts ?? [],
+   592→      affectedPrograms: input.affectedPrograms ?? [],
+   593→      metadata: input.metadata,
+   594→    };
+   595→    this.incidents.set(incident.id, incident);
+   596→    void getEventBus().publish(
+   597→      buildEvent(
+   598→        MONITORING_EVENTS.incidentCreated,
+   599→        {
+   600→          incidentId: incident.id,
+   601→          title: incident.title,
+   602→          severity: incident.severity,
+   603→          type: incident.type,
+   604→          affectedAccounts: incident.affectedAccounts,
+   605→          affectedPrograms: incident.affectedPrograms,
+   606→        },
+   607→        {},
+   608→        "domain",
+   609→      ),
+   610→    );
+   611→    // Auto-notify affected accounts
+   612→    for (const accountId of incident.affectedAccounts) {
+   613→      this.notify(accountId, {
+   614→        type: "incident",
+   615→        title: `Security incident: ${incident.title}`,
+   616→        message: incident.description,
+   617→        severity: incident.severity,
+   618→        incidentId: incident.id,
+   619→        payload: { incidentId: incident.id },
+   620→      });
+   621→    }
+   622→    return incident;
+   623→  }
+   624→
+   625→  listIncidents(filter?: {
+   626→    readonly status?: IncidentStatus;
+   627→    readonly severity?: IncidentSeverity;
+   628→    readonly accountId?: AccountId;
+   629→    readonly programId?: string;
+   630→    readonly since?: string;
+   631→  }): SecurityIncident[] {
+   632→    let list = [...this.incidents.values()];
+   633→    if (filter?.status) list = list.filter((i) => i.status === filter.status);
+   634→    if (filter?.severity) list = list.filter((i) => i.severity === filter.severity);
+   635→    if (filter?.accountId) list = list.filter((i) => i.affectedAccounts.includes(filter.accountId!));
+   636→    if (filter?.programId) list = list.filter((i) => i.affectedPrograms.includes(filter.programId!));
+   637→    if (filter?.since) {
+   638→      const ms = new Date(filter.since).getTime();
+   639→      list = list.filter((i) => new Date(i.openedAt).getTime() >= ms);
+   640→    }
+   641→    return list.sort((a, b) => b.openedAt.localeCompare(a.openedAt));
+   642→  }
+   643→
+   644→  getIncident(id: IncidentId): SecurityIncident | undefined {
+   645→    return this.incidents.get(id);
+   646→  }
+   647→
+   648→  updateIncident(id: IncidentId, update: Partial<SecurityIncident>): SecurityIncident {
+   649→    const existing = this.incidents.get(id);
+   650→    if (!existing) {
+   651→      throw new IdentityError({
+   652→        code: "eks.identity.monitoring.incident_not_found",
+   653→        category: "not_found",
+   654→        message: `Incident ${id} not found.`,
+   655→      });
+   656→    }
+   657→    const updated: SecurityIncident = {
+   658→      ...existing,
+   659→      ...update,
+   660→      id: existing.id,
+   661→      openedAt: existing.openedAt,
+   662→      updatedAt: getClock().iso(),
+   663→    } as SecurityIncident;
+   664→    this.incidents.set(id, updated);
+   665→    return updated;
+   666→  }
+   667→
+   668→  acknowledgeIncident(id: IncidentId, by: string): SecurityIncident {
+   669→    return this.updateIncident(id, {
+   670→      status: "investigating",
+   671→      acknowledgedBy: by,
+   672→      acknowledgedAt: getClock().iso(),
+   673→    });
+   674→  }
+   675→
+   676→  resolveIncident(id: IncidentId, resolution: string, by?: string): SecurityIncident {
+   677→    return this.updateIncident(id, {
+   678→      status: "resolved",
+   679→      resolution,
+   680→      resolvedBy: by,
+   681→      resolvedAt: getClock().iso(),
+   682→    });
+   683→  }
+   684→
+   685→  /** Mark incident as false positive. */
+   686→  dismissIncident(id: IncidentId, reason: string, by?: string): SecurityIncident {
+   687→    return this.updateIncident(id, {
+   688→      status: "false_positive",
+   689→      resolution: reason,
+   690→      resolvedBy: by,
+   691→      resolvedAt: getClock().iso(),
+   692→    });
+   693→  }
+   694→
+   695→  /**
+   696→   * Send a security notification to an account. Delivered via the kernel
+   697→   * notification service (in-app + email by default).
+   698→   */
+   699→  notify(accountId: AccountId, input: {
+   700→    readonly type: AnomalyType | "incident" | "security_alert";
+   701→    readonly title: string;
+   702→    readonly message: string;
+   703→    readonly severity: IncidentSeverity;
+   704→    readonly incidentId?: IncidentId;
+   705→    readonly payload?: Record<string, unknown>;
+   706→    readonly deliveredVia?: ("in_app" | "email" | "sms" | "push")[];
+   707→  }): SecurityNotification {
+   708→    const notification: SecurityNotification = {
+   709→      id: asSecurityNotificationId(generateId("secnotif_")),
+   710→      accountId,
+   711→      type: input.type,
+   712→      title: input.title,
+   713→      message: input.message,
+   714→      severity: input.severity,
+   715→      createdAt: getClock().iso(),
+   716→      read: false,
+   717→      deliveredVia: input.deliveredVia ?? ["in_app", "email"],
+   718→      incidentId: input.incidentId,
+   719→      payload: input.payload,
+   720→    };
+   721→    const list = this.notifications.get(accountId) ?? [];
+   722→    list.push(notification);
+   723→    this.notifications.set(accountId, list);
+   724→    void getEventBus().publish(
+   725→      buildEvent(
+   726→        MONITORING_EVENTS.notificationSent,
+   727→        {
+   728→          notificationId: notification.id,
+   729→          accountId,
+   730→          type: notification.type,
+   731→          severity: notification.severity,
+   732→          title: notification.title,
+   733→          deliveredVia: notification.deliveredVia,
+   734→        },
+   735→        {},
+   736→        "domain",
+   737→      ),
+   738→    );
+   739→    return notification;
+   740→  }
+   741→
+   742→  listNotifications(accountId: AccountId, includeRead = true): SecurityNotification[] {
+   743→    const list = this.notifications.get(accountId) ?? [];
+   744→    return (includeRead ? list : list.filter((n) => !n.read)).sort((a, b) =>
+   745→      b.createdAt.localeCompare(a.createdAt),
+   746→    );
+   747→  }
+   748→
+   749→  markNotificationRead(id: SecurityNotificationId): void {
+   750→    for (const list of this.notifications.values()) {
+   751→      const idx = list.findIndex((n) => n.id === id);
+   752→      if (idx >= 0) {
+   753→        list[idx] = { ...list[idx], read: true };
+   754→        return;
+   755→      }
+   756→    }
+   757→  }
+   758→
+   759→  /**
+   760→   * Compute a 0-100 risk score for an account from recent anomalies and
+   761→   * incidents. Higher = riskier. Returns the score, level, contributing
+   762→   * factors, and recommended action.
+   763→   */
+   764→  riskScore(accountId: AccountId): {
+   765→    readonly score: number;
+   766→    readonly level: "low" | "medium" | "high" | "critical";
+   767→    readonly factors: { label: string; weight: number; detail?: string }[];
+   768→    readonly recommendedAction: "allow" | "challenge" | "deny" | "notify";
+   769→  } {
+   770→    const since = Date.now() - RISK_WINDOW_MS;
+   771→    const anomalies = this.anomalies.filter(
+   772→      (a) => a.accountId === accountId && new Date(a.detectedAt).getTime() >= since,
+   773→    );
+   774→    const incidents = [...this.incidents.values()].filter(
+   775→      (i) => i.affectedAccounts.includes(accountId) && i.status !== "resolved" && i.status !== "false_positive",
+   776→    );
+   777→    let score = 0;
+   778→    const factors: { label: string; weight: number; detail?: string }[] = [];
+   779→    for (const a of anomalies) {
+   780→      const w = SEVERITY_WEIGHT[a.severity];
+   781→      score += w;
+   782→      factors.push({ label: a.type, weight: w, detail: a.description });
+   783→    }
+   784→    for (const i of incidents) {
+   785→      const w = SEVERITY_WEIGHT[i.severity];
+   786→      score += Math.round(w * 0.5); // incidents are partly double-counted with their anomalies
+   787→      factors.push({ label: `incident:${i.type}`, weight: Math.round(w * 0.5), detail: i.title });
+   788→    }
+   789→    score = Math.min(100, score);
+   790→    const level: "low" | "medium" | "high" | "critical" =
+   791→      score < 25 ? "low" : score < 50 ? "medium" : score < 75 ? "high" : "critical";
+   792→    const recommendedAction: "allow" | "challenge" | "deny" | "notify" =
+   793→      level === "critical" ? "deny" : level === "high" ? "challenge" : level === "medium" ? "notify" : "allow";
+   794→    return { score, level, factors, recommendedAction };
+   795→  }
+   796→
+   797→  getBaselines(): BehavioralBaseline[] {
+   798→    return [...this.baselines.values()];
+   799→  }
+   800→
+   801→  getBaseline(accountId: AccountId): BehavioralBaseline | undefined {
+   802→    return this.baselines.get(accountId);
+   803→  }
+   804→
+   805→  setBaseline(accountId: AccountId, baseline: Omit<BehavioralBaseline, "accountId" | "updatedAt">): BehavioralBaseline {
+   806→    const stamped: BehavioralBaseline = {
+   807→      ...baseline,
+   808→      accountId,
+   809→      updatedAt: getClock().iso(),
+   810→    };
+   811→    this.baselines.set(accountId, stamped);
+   812→    return stamped;
+   813→  }
+   814→
+   815→  /** List recent anomalies (newest first). */
+   816→  listAnomalies(filter?: {
+   817→    readonly type?: AnomalyType;
+   818→    readonly accountId?: AccountId;
+   819→    readonly since?: string;
+   820→    readonly limit?: number;
+   821→  }): Anomaly[] {
+   822→    let list = [...this.anomalies];
+   823→    if (filter?.type) list = list.filter((a) => a.type === filter.type);
+   824→    if (filter?.accountId) list = list.filter((a) => a.accountId === filter.accountId);
+   825→    if (filter?.since) {
+   826→      const ms = new Date(filter.since).getTime();
+   827→      list = list.filter((a) => new Date(a.detectedAt).getTime() >= ms);
+   828→    }
+   829→    list.sort((a, b) => b.detectedAt.localeCompare(a.detectedAt));
+   830→    return filter?.limit ? list.slice(0, filter.limit) : list;
+   831→  }
+   832→
+   833→  /** Statistics for dashboards. */
+   834→  getStats(): {
+   835→    readonly totalAnomalies: number;
+   836→    readonly totalIncidents: number;
+   837→    readonly openIncidents: number;
+   838→    readonly bySeverity: Record<IncidentSeverity, number>;
+   839→    readonly byType: Partial<Record<AnomalyType, number>>;
+   840→  } {
+   841→    const bySeverity: Record<IncidentSeverity, number> = { low: 0, medium: 0, high: 0, critical: 0 };
+   842→    const byType: Partial<Record<AnomalyType, number>> = {};
+   843→    let openIncidents = 0;
+   844→    for (const i of this.incidents.values()) {
+   845→      bySeverity[i.severity]++;
+   846→      if (i.status === "open" || i.status === "investigating") openIncidents++;
+   847→    }
+   848→    for (const a of this.anomalies) {
+   849→      byType[a.type] = (byType[a.type] ?? 0) + 1;
+   850→    }
+   851→    return {
+   852→      totalAnomalies: this.anomalies.length,
+   853→      totalIncidents: this.incidents.size,
+   854→      openIncidents,
+   855→      bySeverity,
+   856→      byType,
+   857→    };
+   858→  }
+   859→
+   860→  private pushCapped<T>(arr: T[], item: T): void {
+   861→    arr.push(item);
+   862→    const cap = ANOMALY_THRESHOLDS.event_ring_buffer_cap;
+   863→    if (arr.length > cap) arr.splice(0, arr.length - cap);
+   864→  }
+   865→}
+   866→
+   867→// ---------------------------------------------------------------------------
+   868→// Singleton
+   869→// ---------------------------------------------------------------------------
+   870→
+   871→let _monitor: SecurityMonitor | null = null;
+   872→export function getMonitoring(): SecurityMonitor {
+   873→  if (!_monitor) _monitor = new SecurityMonitor();
+   874→  return _monitor;
+   875→}
+   876→export function setMonitoring(m: SecurityMonitor): void {
+   877→  _monitor = m;
+   878→}
+   879→export function resetMonitoring(): void {
+   880→  _monitor = null;
+   881→}
+   882→
+   883→/** Stable evidence hash for anomaly de-duplication. */
+   884→export function anomalyFingerprint(anomaly: Pick<Anomaly, "type" | "accountId" | "programId" | "ip" | "evidence">): string {
+   885→  return createHash("sha256")
+   886→    .update(JSON.stringify({ type: anomaly.type, accountId: anomaly.accountId, programId: anomaly.programId, ip: anomaly.ip, evidence: anomaly.evidence }), "utf8")
+   887→    .digest("hex")
+   888→    .slice(0, 16);
+   889→}
+   890→
+   891→export { IdentityError };
+   892→

@@ -1,0 +1,1235 @@
+     1→"use client";
+     2→
+     3→import { useState, useEffect, useCallback, useMemo } from "react";
+     4→import {
+     5→  Users, Activity, Stethoscope, Star, Calendar, Cpu, ShieldAlert,
+     6→  AlertTriangle, Plus, ChevronRight, ChevronDown, RefreshCw, Circle,
+     7→  CalendarClock, ClipboardList, ShieldCheck, Timer, FileWarning,
+     8→  Scale, TrendingUp,
+     9→} from "lucide-react";
+    10→import { Button } from "@/components/ui/button";
+    11→import { Badge } from "@/components/ui/badge";
+    12→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    13→import {
+    14→  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
+    15→} from "@/components/ui/dialog";
+    16→import { Input } from "@/components/ui/input";
+    17→import { Label } from "@/components/ui/label";
+    18→import {
+    19→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    20→} from "@/components/ui/select";
+    21→import {
+    22→  Collapsible, CollapsibleTrigger, CollapsibleContent,
+    23→} from "@/components/ui/collapsible";
+    24→import { toast } from "@/hooks/use-toast";
+    25→
+    26→// ---------------------------------------------------------------------------
+    27→// Types — mirror the shapes returned by /api/dashboard (health_technician) and
+    28→// the technician / health sub-APIs. Keeping them loose (optional fields) lets
+    29→// the dashboard degrade gracefully when the platform hasn't seeded data yet.
+    30→// ---------------------------------------------------------------------------
+    31→
+    32→interface TechnicianSummary {
+    33→  id: string;
+    34→  displayName: string;
+    35→  category?: string;
+    36→  rating?: number;
+    37→  totalSessions?: number;
+    38→  verifiedSessions?: number;
+    39→  disputedSessions?: number;
+    40→  status?: string;
+    41→  reviewCount?: number;
+    42→}
+    43→
+    44→interface MeasurementSession {
+    45→  id: string;
+    46→  participantId: string;
+    47→  technicianId: string;
+    48→  programId: string;
+    49→  status: string;
+    50→  scheduledAt: string;
+    51→  measurementCount: number;
+    52→  evidenceCount: number;
+    53→  completedAt?: string;
+    54→}
+    55→
+    56→interface Appointment {
+    57→  id: string;
+    58→  participantId: string;
+    59→  technicianId: string;
+    60→  programId: string;
+    61→  status: string;
+    62→  scheduledAt: string;
+    63→  durationMinutes?: number;
+    64→  sessionType?: string;
+    65→}
+    66→
+    67→interface DeviceRecord {
+    68→  id: string;
+    69→  serialNumber: string;
+    70→  model: string;
+    71→  manufacturer?: string;
+    72→  type: string;
+    73→  trustLevel: string;
+    74→  status: string;
+    75→  certified?: boolean;
+    76→  firmwareVersion?: string;
+    77→  lastCalibratedAt?: string;
+    78→}
+    79→
+    80→interface DisputeRecord {
+    81→  id: string;
+    82→  status: string;
+    83→  reason: string;
+    84→  openedAt: string;
+    85→  technicianId: string;
+    86→  programId?: string;
+    87→}
+    88→
+    89→interface FraudAlert {
+    90→  id: string;
+    91→  type: string;
+    92→  severity: string;
+    93→  status: string;
+    94→  detectedAt: string;
+    95→  technicianId: string;
+    96→}
+    97→
+    98→interface HealthSchema {
+    99→  id: string;
+   100→  slug: string;
+   101→  name: string;
+   102→  category?: string;
+   103→  valueType: string;
+   104→  allowedUnits?: string[];
+   105→  defaultUnit?: string;
+   106→}
+   107→
+   108→interface HealthSource {
+   109→  id: string;
+   110→  type: string;
+   111→  label: string;
+   112→  trustLevel?: string;
+   113→  verified?: boolean;
+   114→}
+   115→
+   116→interface HealthProfile {
+   117→  id: string;
+   118→  accountId?: string;
+   119→  programCount?: number;
+   120→  deviceCount?: number;
+   121→  createdAt?: string;
+   122→}
+   123→
+   124→interface DashboardData {
+   125→  persona: string;
+   126→  displayName: string;
+   127→  email: string;
+   128→  technicians?: {
+   129→    stats: { total?: number; active?: number };
+   130→    list: TechnicianSummary[];
+   131→  };
+   132→  measurements?: {
+   133→    stats: { total?: number };
+   134→  };
+   135→}
+   136→
+   137→// ---------------------------------------------------------------------------
+   138→// Main component
+   139→// ---------------------------------------------------------------------------
+   140→
+   141→export function TechnicianDashboard({ data, onRefresh }: { data: DashboardData; onRefresh: () => void }) {
+   142→  const techs = data.technicians;
+   143→  const measurements = data.measurements;
+   144→
+   145→  // Sub-API state (loaded client-side; dashboard route only ships aggregate stats)
+   146→  const [sessions, setSessions] = useState<MeasurementSession[]>([]);
+   147→  const [appointments, setAppointments] = useState<Appointment[]>([]);
+   148→  const [devices, setDevices] = useState<DeviceRecord[]>([]);
+   149→  const [disputes, setDisputes] = useState<DisputeRecord[]>([]);
+   150→  const [fraudAlerts, setFraudAlerts] = useState<FraudAlert[]>([]);
+   151→  const [loadingSub, setLoadingSub] = useState(true);
+   152→  const [subError, setSubError] = useState<string | null>(null);
+   153→
+   154→  // Record-measurement dialog state
+   155→  const [recordOpen, setRecordOpen] = useState(false);
+   156→
+   157→  const loadSubData = useCallback(async () => {
+   158→    setLoadingSub(true);
+   159→    setSubError(null);
+   160→    try {
+   161→      const [sessRes, apptRes, devRes, dispRes, fraudRes] = await Promise.allSettled([
+   162→        fetch("/api/technicians/sessions", { cache: "no-store" }),
+   163→        fetch("/api/technicians/appointments", { cache: "no-store" }),
+   164→        fetch("/api/technicians/devices", { cache: "no-store" }),
+   165→        fetch("/api/technicians/disputes", { cache: "no-store" }),
+   166→        fetch("/api/technicians/fraud", { cache: "no-store" }),
+   167→      ]);
+   168→
+   169→      // Promise.allSettled wraps the fetch promises; the json() reads happen below.
+   170→      const readJson = async <T,>(r: PromiseSettledResult<Response>, fallback: T, label: string): Promise<T> => {
+   171→        if (r.status !== "fulfilled") {
+   172→          console.warn(`[technician-dashboard] ${label} request rejected`);
+   173→          return fallback;
+   174→        }
+   175→        try {
+   176→          const j = (await r.value.json()) as { ok?: boolean; data?: T; error?: { message?: string } };
+   177→          if (!j?.ok) {
+   178→            console.warn(`[technician-dashboard] ${label} returned ok=false`, j?.error?.message);
+   179→            return fallback;
+   180→          }
+   181→          return (j.data as T) ?? fallback;
+   182→        } catch {
+   183→          return fallback;
+   184→        }
+   185→      };
+   186→
+   187→      const [sess, appt, dev, disp, fraud] = await Promise.all([
+   188→        readJson<{ sessions: MeasurementSession[] } | MeasurementSession[]>(sessRes, { sessions: [] }, "sessions"),
+   189→        readJson<{ appointments: Appointment[] } | Appointment[]>(apptRes, { appointments: [] }, "appointments"),
+   190→        readJson<{ devices: DeviceRecord[] } | DeviceRecord[]>(devRes, { devices: [] }, "devices"),
+   191→        readJson<{ disputes: DisputeRecord[] } | DisputeRecord[]>(dispRes, { disputes: [] }, "disputes"),
+   192→        readJson<{ alerts: FraudAlert[] } | FraudAlert[]>(fraudRes, { alerts: [] }, "fraud"),
+   193→      ]);
+   194→
+   195→      setSessions(Array.isArray(sess) ? sess : sess.sessions ?? []);
+   196→      setAppointments(Array.isArray(appt) ? appt : appt.appointments ?? []);
+   197→      setDevices(Array.isArray(dev) ? dev : dev.devices ?? []);
+   198→      setDisputes(Array.isArray(disp) ? disp : disp.disputes ?? []);
+   199→      setFraudAlerts(Array.isArray(fraud) ? fraud : fraud.alerts ?? []);
+   200→    } catch (err) {
+   201→      const msg = err instanceof Error ? err.message : "Failed to load technician data";
+   202→      setSubError(msg);
+   203→      toast({ title: "Load failed", description: msg, variant: "destructive" });
+   204→    } finally {
+   205→      setLoadingSub(false);
+   206→    }
+   207→  }, []);
+   208→
+   209→  useEffect(() => {
+   210→    void loadSubData();
+   211→  }, [loadSubData]);
+   212→
+   213→  // Derived stats ---------------------------------------------------------
+   214→  const avgRating = useMemo(() => {
+   215→    const rated = techs?.list?.filter((t) => typeof t.rating === "number") ?? [];
+   216→    if (rated.length === 0) return 0;
+   217→    return rated.reduce((s, t) => s + (t.rating ?? 0), 0) / rated.length;
+   218→  }, [techs]);
+   219→
+   220→  const activeSessions = useMemo(() => {
+   221→    const activeStates = new Set(["in_progress", "active", "scheduled", "open"]);
+   222→    return sessions.filter((s) => activeStates.has(s.status?.toLowerCase())).length;
+   223→  }, [sessions]);
+   224→
+   225→  const handleRecorded = useCallback(() => {
+   226→    setRecordOpen(false);
+   227→    onRefresh();
+   228→    // Sessions list may reference the new measurement; refresh sub-data too.
+   229→    void loadSubData();
+   230→  }, [onRefresh, loadSubData]);
+   231→
+   232→  const handleManualRefresh = useCallback(() => {
+   233→    onRefresh();
+   234→    void loadSubData();
+   235→  }, [onRefresh, loadSubData]);
+   236→
+   237→  return (
+   238→    <div className="space-y-6">
+   239→      {/* Top stat row + primary action */}
+   240→      <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
+   241→        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 flex-1">
+   242→          <StatCard
+   243→            icon={<Users className="h-4 w-4" />}
+   244→            label="Total Technicians"
+   245→            value={techs?.stats.total ?? 0}
+   246→            hint={`${techs?.stats.active ?? 0} active`}
+   247→          />
+   248→          <StatCard
+   249→            icon={<Stethoscope className="h-4 w-4" />}
+   250→            label="Active Sessions"
+   251→            value={activeSessions}
+   252→            hint={`${sessions.length} total`}
+   253→            loading={loadingSub}
+   254→          />
+   255→          <StatCard
+   256→            icon={<Activity className="h-4 w-4" />}
+   257→            label="Measurements Recorded"
+   258→            value={measurements?.stats.total ?? 0}
+   259→            hint="all profiles"
+   260→          />
+   261→          <StatCard
+   262→            icon={<Star className="h-4 w-4" />}
+   263→            label="Avg Rating"
+   264→            value={avgRating > 0 ? avgRating.toFixed(2) : "—"}
+   265→            hint={`${techs?.list?.filter((t) => typeof t.rating === "number").length ?? 0} rated`}
+   266→          />
+   267→        </div>
+   268→        <div className="flex sm:flex-col gap-2 sm:justify-end">
+   269→          <Button
+   270→            onClick={() => setRecordOpen(true)}
+   271→            className="bg-[var(--brand)] text-[var(--brand-foreground)] hover:opacity-90 h-9"
+   272→          >
+   273→            <Plus className="h-4 w-4 mr-1" /> Record Measurement
+   274→          </Button>
+   275→          <Button variant="outline" onClick={handleManualRefresh} className="h-9" disabled={loadingSub}>
+   276→            <RefreshCw className={`h-4 w-4 mr-1 ${loadingSub ? "animate-spin" : ""}`} />
+   277→            Refresh
+   278→          </Button>
+   279→        </div>
+   280→      </div>
+   281→
+   282→      {subError && (
+   283→        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+   284→          Could not load some technician data: {subError}. Showing partial view.
+   285→        </div>
+   286→      )}
+   287→
+   288→      {/* Sessions + Appointments row */}
+   289→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   290→        <SessionsCard sessions={sessions} loading={loadingSub} onRefresh={handleManualRefresh} />
+   291→        <AppointmentsCard appointments={appointments} loading={loadingSub} />
+   292→      </div>
+   293→
+   294→      {/* Devices + Disputes/Fraud row */}
+   295→      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+   296→        <DevicesCard devices={devices} loading={loadingSub} />
+   297→        <DisputesFraudCard disputes={disputes} fraudAlerts={fraudAlerts} loading={loadingSub} />
+   298→      </div>
+   299→
+   300→      {/* Record-measurement dialog */}
+   301→      <RecordMeasurementDialog
+   302→        open={recordOpen}
+   303→        onOpenChange={setRecordOpen}
+   304→        onRecorded={handleRecorded}
+   305→      />
+   306→    </div>
+   307→  );
+   308→}
+   309→
+   310→// ---------------------------------------------------------------------------
+   311→// Sessions — expandable list with state badges
+   312→// ---------------------------------------------------------------------------
+   313→
+   314→function SessionsCard({
+   315→  sessions,
+   316→  loading,
+   317→  onRefresh,
+   318→}: {
+   319→  sessions: MeasurementSession[];
+   320→  loading: boolean;
+   321→  onRefresh: () => void;
+   322→}) {
+   323→  const [expanded, setExpanded] = useState<string | null>(null);
+   324→
+   325→  const stateVariant = (state: string): "default" | "secondary" | "destructive" | "outline" => {
+   326→    const s = state?.toLowerCase();
+   327→    if (s === "completed" || s === "verified") return "default";
+   328→    if (s === "in_progress" || s === "active" || s === "scheduled" || s === "open") return "secondary";
+   329→    if (s === "disputed" || s === "cancelled" || s === "failed") return "destructive";
+   330→    return "outline";
+   331→  };
+   332→
+   333→  return (
+   334→    <Card>
+   335→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+   336→        <CardTitle className="text-base flex items-center gap-2">
+   337→          <ClipboardList className="h-4 w-4 text-muted-foreground" />
+   338→          Measurement Sessions
+   339→        </CardTitle>
+   340→        <Badge variant="outline" className="text-[10px]">{sessions.length} sessions</Badge>
+   341→      </CardHeader>
+   342→      <CardContent>
+   343→        {loading ? (
+   344→          <ListSkeleton rows={4} />
+   345→        ) : sessions.length === 0 ? (
+   346→          <EmptyState
+   347→            icon={<ClipboardList className="h-8 w-8" />}
+   348→            message="No measurement sessions recorded yet."
+   349→          />
+   350→        ) : (
+   351→          <div className="space-y-1.5 max-h-96 overflow-y-auto eks-scroll pr-1">
+   352→            {sessions.slice(0, 50).map((s) => {
+   353→              const isOpen = expanded === s.id;
+   354→              return (
+   355→                <Collapsible key={s.id} open={isOpen} onOpenChange={(o) => setExpanded(o ? s.id : null)}>
+   356→                  <div className="rounded-lg border border-border/60 overflow-hidden">
+   357→                    <CollapsibleTrigger asChild>
+   358→                      <button
+   359→                        type="button"
+   360→                        className="w-full flex items-center gap-3 p-3 text-left hover:bg-accent/40 transition-colors"
+   361→                      >
+   362→                        <Circle
+   363→                          className={`h-2.5 w-2.5 shrink-0 ${
+   364→                            s.status === "completed" ? "fill-emerald-500 text-emerald-500"
+   365→                            : s.status === "disputed" || s.status === "failed" ? "fill-destructive text-destructive"
+   366→                            : "fill-amber-500 text-amber-500"
+   367→                          }`}
+   368→                        />
+   369→                        <div className="flex-1 min-w-0">
+   370→                          <p className="text-sm font-medium truncate">
+   371→                            {labelFor(s.participantId)}
+   372→                          </p>
+   373→                          <p className="text-[11px] text-muted-foreground truncate">
+   374→                            Tech: {labelFor(s.technicianId)} · {labelFor(s.programId)}
+   375→                          </p>
+   376→                        </div>
+   377→                        <Badge variant={stateVariant(s.status)} className="text-[10px] capitalize">
+   378→                          {s.status}
+   379→                        </Badge>
+   380→                        {isOpen ? (
+   381→                          <ChevronDown className="h-4 w-4 text-muted-foreground shrink-0" />
+   382→                        ) : (
+   383→                          <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+   384→                        )}
+   385→                      </button>
+   386→                    </CollapsibleTrigger>
+   387→                    <CollapsibleContent>
+   388→                      <div className="border-t border-border/60 bg-muted/30 p-3 grid grid-cols-2 gap-3 text-xs">
+   389→                        <Detail label="Session ID" value={s.id} mono />
+   390→                        <Detail label="Participant" value={s.participantId} mono />
+   391→                        <Detail label="Technician" value={s.technicianId} mono />
+   392→                        <Detail label="Program" value={s.programId} mono />
+   393→                        <Detail
+   394→                          label="Scheduled"
+   395→                          value={fmtDate(s.scheduledAt)}
+   396→                        />
+   397→                        <Detail
+   398→                          label="Completed"
+   399→                          value={s.completedAt ? fmtDate(s.completedAt) : "—"}
+   400→                        />
+   401→                        <Detail
+   402→                          label="Measurements"
+   403→                          value={String(s.measurementCount)}
+   404→                          icon={<Activity className="h-3 w-3" />}
+   405→                        />
+   406→                        <Detail
+   407→                          label="Evidence"
+   408→                          value={String(s.evidenceCount)}
+   409→                          icon={<ShieldCheck className="h-3 w-3" />}
+   410→                        />
+   411→                      </div>
+   412→                    </CollapsibleContent>
+   413→                  </div>
+   414→                </Collapsible>
+   415→              );
+   416→            })}
+   417→          </div>
+   418→        )}
+   419→        {sessions.length > 0 && (
+   420→          <div className="mt-3 flex justify-end">
+   421→            <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onRefresh}>
+   422→              <RefreshCw className="h-3 w-3 mr-1" /> Reload
+   423→            </Button>
+   424→          </div>
+   425→        )}
+   426→      </CardContent>
+   427→    </Card>
+   428→  );
+   429→}
+   430→
+   431→// ---------------------------------------------------------------------------
+   432→// Appointments — list + "Schedule New" informational dialog
+   433→// ---------------------------------------------------------------------------
+   434→
+   435→function AppointmentsCard({
+   436→  appointments,
+   437→  loading,
+   438→}: {
+   439→  appointments: Appointment[];
+   440→  loading: boolean;
+   441→}) {
+   442→  const [scheduleOpen, setScheduleOpen] = useState(false);
+   443→
+   444→  const statusVariant = (state: string): "default" | "secondary" | "destructive" | "outline" => {
+   445→    const s = state?.toLowerCase();
+   446→    if (s === "confirmed" || s === "scheduled" || s === "completed") return "default";
+   447→    if (s === "pending" || s === "in_progress") return "secondary";
+   448→    if (s === "cancelled" || s === "no_show") return "destructive";
+   449→    return "outline";
+   450→  };
+   451→
+   452→  const sorted = useMemo(() => {
+   453→    return [...appointments].sort((a, b) => {
+   454→      const ta = new Date(a.scheduledAt).getTime();
+   455→      const tb = new Date(b.scheduledAt).getTime();
+   456→      if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
+   457→      if (Number.isNaN(ta)) return 1;
+   458→      if (Number.isNaN(tb)) return -1;
+   459→      return ta - tb;
+   460→    });
+   461→  }, [appointments]);
+   462→
+   463→  return (
+   464→    <Card>
+   465→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+   466→        <CardTitle className="text-base flex items-center gap-2">
+   467→          <Calendar className="h-4 w-4 text-muted-foreground" />
+   468→          Appointments
+   469→        </CardTitle>
+   470→        <div className="flex items-center gap-2">
+   471→          <Badge variant="outline" className="text-[10px]">{appointments.length} total</Badge>
+   472→          <Button
+   473→            size="sm"
+   474→            variant="outline"
+   475→            className="h-7 text-xs"
+   476→            onClick={() => setScheduleOpen(true)}
+   477→          >
+   478→            <Plus className="h-3 w-3 mr-1" /> Schedule New
+   479→          </Button>
+   480→        </div>
+   481→      </CardHeader>
+   482→      <CardContent>
+   483→        {loading ? (
+   484→          <ListSkeleton rows={4} />
+   485→        ) : sorted.length === 0 ? (
+   486→          <EmptyState
+   487→            icon={<Calendar className="h-8 w-8" />}
+   488→            message="No appointments on the calendar."
+   489→          />
+   490→        ) : (
+   491→          <div className="space-y-1.5 max-h-96 overflow-y-auto eks-scroll pr-1">
+   492→            {sorted.slice(0, 50).map((a) => (
+   493→              <div
+   494→                key={a.id}
+   495→                className="flex items-center gap-3 rounded-lg border border-border/60 p-3"
+   496→              >
+   497→                <CalendarClock className="h-4 w-4 shrink-0 text-muted-foreground" />
+   498→                <div className="flex-1 min-w-0">
+   499→                  <p className="text-sm font-medium truncate">
+   500→                    {labelFor(a.participantId)}
+   501→                  </p>
+   502→                  <p className="text-[11px] text-muted-foreground truncate">
+   503→                    {fmtDate(a.scheduledAt)}
+   504→                    {a.durationMinutes ? ` · ${a.durationMinutes}m` : ""}
+   505→                    {a.sessionType ? ` · ${a.sessionType}` : ""}
+   506→                  </p>
+   507→                </div>
+   508→                <Badge variant={statusVariant(a.status)} className="text-[10px] capitalize">
+   509→                  {a.status}
+   510→                </Badge>
+   511→              </div>
+   512→            ))}
+   513→          </div>
+   514→        )}
+   515→      </CardContent>
+   516→
+   517→      <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}>
+   518→        <DialogContent>
+   519→          <DialogHeader>
+   520→            <DialogTitle>Schedule New Appointment</DialogTitle>
+   521→            <DialogDescription>
+   522→              Capture basic appointment details. Full scheduling will be wired to the
+   523→              technician appointments API once write endpoints ship.
+   524→            </DialogDescription>
+   525→          </DialogHeader>
+   526→          <ScheduleFormStub
+   527→            onSubmit={() => {
+   528→              toast({
+   529→                title: "Saved locally",
+   530→                description:
+   531→                  "Appointment draft captured. A POST /api/technicians/appointments endpoint is not yet available — refresh to re-sync server data.",
+   532→              });
+   533→              setScheduleOpen(false);
+   534→            }}
+   535→          />
+   536→        </DialogContent>
+   537→      </Dialog>
+   538→    </Card>
+   539→  );
+   540→}
+   541→
+   542→function ScheduleFormStub({ onSubmit }: { onSubmit: () => void }) {
+   543→  const [participant, setParticipant] = useState("");
+   544→  const [date, setDate] = useState("");
+   545→  const [duration, setDuration] = useState("30");
+   546→  const [type, setType] = useState("in_clinic");
+   547→
+   548→  return (
+   549→    <div className="space-y-3 py-2">
+   550→      <div className="space-y-1.5">
+   551→        <Label htmlFor="appt-participant">Participant</Label>
+   552→        <Input
+   553→          id="appt-participant"
+   554→          value={participant}
+   555→          onChange={(e) => setParticipant(e.target.value)}
+   556→          placeholder="Participant name or ID"
+   557→        />
+   558→      </div>
+   559→      <div className="grid grid-cols-2 gap-3">
+   560→        <div className="space-y-1.5">
+   561→          <Label htmlFor="appt-date">Scheduled At</Label>
+   562→          <Input
+   563→            id="appt-date"
+   564→            type="datetime-local"
+   565→            value={date}
+   566→            onChange={(e) => setDate(e.target.value)}
+   567→          />
+   568→        </div>
+   569→        <div className="space-y-1.5">
+   570→          <Label htmlFor="appt-duration">Duration (min)</Label>
+   571→          <Input
+   572→            id="appt-duration"
+   573→            type="number"
+   574→            min={1}
+   575→            value={duration}
+   576→            onChange={(e) => setDuration(e.target.value)}
+   577→          />
+   578→        </div>
+   579→      </div>
+   580→      <div className="space-y-1.5">
+   581→        <Label>Session Type</Label>
+   582→        <Select value={type} onValueChange={setType}>
+   583→          <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+   584→          <SelectContent>
+   585→            <SelectItem value="in_clinic">In-clinic</SelectItem>
+   586→            <SelectItem value="home_visit">Home visit</SelectItem>
+   587→            <SelectItem value="telehealth">Telehealth</SelectItem>
+   588→            <SelectItem value="field">Field session</SelectItem>
+   589→          </SelectContent>
+   590→        </Select>
+   591→      </div>
+   592→      <DialogFooter>
+   593→        <Button variant="outline" onClick={onSubmit}>Save Draft</Button>
+   594→      </DialogFooter>
+   595→    </div>
+   596→  );
+   597→}
+   598→
+   599→// ---------------------------------------------------------------------------
+   600→// Devices
+   601→// ---------------------------------------------------------------------------
+   602→
+   603→function DevicesCard({
+   604→  devices,
+   605→  loading,
+   606→}: {
+   607→  devices: DeviceRecord[];
+   608→  loading: boolean;
+   609→}) {
+   610→  const statusVariant = (state: string): "default" | "secondary" | "destructive" | "outline" => {
+   611→    const s = state?.toLowerCase();
+   612→    if (s === "active" || s === "online" || s === "ready") return "default";
+   613→    if (s === "calibrating" || s === "standby") return "secondary";
+   614→    if (s === "offline" || s === "retired" || s === "faulty") return "destructive";
+   615→    return "outline";
+   616→  };
+   617→
+   618→  return (
+   619→    <Card>
+   620→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+   621→        <CardTitle className="text-base flex items-center gap-2">
+   622→          <Cpu className="h-4 w-4 text-muted-foreground" />
+   623→          Device Registry
+   624→        </CardTitle>
+   625→        <Badge variant="outline" className="text-[10px]">{devices.length} devices</Badge>
+   626→      </CardHeader>
+   627→      <CardContent>
+   628→        {loading ? (
+   629→          <ListSkeleton rows={4} />
+   630→        ) : devices.length === 0 ? (
+   631→          <EmptyState
+   632→            icon={<Cpu className="h-8 w-8" />}
+   633→            message="No devices registered."
+   634→          />
+   635→        ) : (
+   636→          <div className="space-y-1.5 max-h-96 overflow-y-auto eks-scroll pr-1">
+   637→            {devices.map((d) => (
+   638→              <div
+   639→                key={d.id}
+   640→                className="rounded-lg border border-border/60 p-3"
+   641→              >
+   642→                <div className="flex items-center gap-2 mb-1">
+   643→                  <div className="flex h-7 w-7 items-center justify-center rounded-md bg-muted text-muted-foreground shrink-0">
+   644→                    <Cpu className="h-3.5 w-3.5" />
+   645→                  </div>
+   646→                  <div className="flex-1 min-w-0">
+   647→                    <p className="text-sm font-medium truncate">{d.model}</p>
+   648→                    <p className="text-[11px] text-muted-foreground truncate">
+   649→                      {d.manufacturer ? `${d.manufacturer} · ` : ""}{d.type} · SN {d.serialNumber}
+   650→                    </p>
+   651→                  </div>
+   652→                  <Badge variant={statusVariant(d.status)} className="text-[10px] capitalize">
+   653→                    {d.status}
+   654→                  </Badge>
+   655→                </div>
+   656→                <div className="flex flex-wrap items-center gap-1.5 mt-2">
+   657→                  <Badge variant="outline" className="text-[9px] capitalize">
+   658→                    <ShieldCheck className="h-2.5 w-2.5 mr-0.5" />
+   659→                    {d.trustLevel}
+   660→                  </Badge>
+   661→                  {d.certified && (
+   662→                    <Badge variant="outline" className="text-[9px] text-emerald-600 border-emerald-600/30">
+   663→                      Certified
+   664→                    </Badge>
+   665→                  )}
+   666→                  {d.firmwareVersion && (
+   667→                    <span className="text-[10px] text-muted-foreground">fw {d.firmwareVersion}</span>
+   668→                  )}
+   669→                  {d.lastCalibratedAt && (
+   670→                    <span className="text-[10px] text-muted-foreground ml-auto">
+   671→                      Calibrated {fmtDate(d.lastCalibratedAt, true)}
+   672→                    </span>
+   673→                  )}
+   674→                </div>
+   675→              </div>
+   676→            ))}
+   677→          </div>
+   678→        )}
+   679→      </CardContent>
+   680→    </Card>
+   681→  );
+   682→}
+   683→
+   684→// ---------------------------------------------------------------------------
+   685→// Disputes + Fraud alerts
+   686→// ---------------------------------------------------------------------------
+   687→
+   688→function DisputesFraudCard({
+   689→  disputes,
+   690→  fraudAlerts,
+   691→  loading,
+   692→}: {
+   693→  disputes: DisputeRecord[];
+   694→  fraudAlerts: FraudAlert[];
+   695→  loading: boolean;
+   696→}) {
+   697→  const severityVariant = (sev: string): "default" | "secondary" | "destructive" | "outline" => {
+   698→    const s = sev?.toLowerCase();
+   699→    if (s === "critical" || s === "high") return "destructive";
+   700→    if (s === "medium") return "secondary";
+   701→    if (s === "low") return "outline";
+   702→    return "default";
+   703→  };
+   704→
+   705→  const disputeVariant = (state: string): "default" | "secondary" | "destructive" | "outline" => {
+   706→    const s = state?.toLowerCase();
+   707→    if (s === "resolved" || s === "closed") return "default";
+   708→    if (s === "open" || s === "investigating") return "destructive";
+   709→    if (s === "withdrawn") return "outline";
+   710→    return "secondary";
+   711→  };
+   712→
+   713→  return (
+   714→    <Card>
+   715→      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+   716→        <CardTitle className="text-base flex items-center gap-2">
+   717→          <ShieldAlert className="h-4 w-4 text-muted-foreground" />
+   718→          Disputes &amp; Fraud
+   719→        </CardTitle>
+   720→        <div className="flex items-center gap-1.5">
+   721→          <Badge variant="outline" className="text-[10px]">{disputes.length} disputes</Badge>
+   722→          <Badge variant="outline" className="text-[10px]">{fraudAlerts.length} alerts</Badge>
+   723→        </div>
+   724→      </CardHeader>
+   725→      <CardContent>
+   726→        {loading ? (
+   727→          <ListSkeleton rows={4} />
+   728→        ) : disputes.length === 0 && fraudAlerts.length === 0 ? (
+   729→          <EmptyState
+   730→            icon={<ShieldCheck className="h-8 w-8" />}
+   731→            message="No disputes or fraud alerts. All clear."
+   732→          />
+   733→        ) : (
+   734→          <div className="space-y-3 max-h-96 overflow-y-auto eks-scroll pr-1">
+   735→            {fraudAlerts.length > 0 && (
+   736→              <div className="space-y-1.5">
+   737→                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1">
+   738→                  <AlertTriangle className="h-3 w-3" /> Fraud Alerts
+   739→                </p>
+   740→                {fraudAlerts.map((a) => (
+   741→                  <div
+   742→                    key={a.id}
+   743→                    className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2.5"
+   744→                  >
+   745→                    <FileWarning className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
+   746→                    <div className="flex-1 min-w-0">
+   747→                      <div className="flex items-center gap-2 mb-0.5">
+   748→                        <span className="text-xs font-medium capitalize">{a.type.replace(/_/g, " ")}</span>
+   749→                        <Badge variant={severityVariant(a.severity)} className="text-[9px] capitalize">
+   750→                          {a.severity}
+   751→                        </Badge>
+   752→                      </div>
+   753→                      <p className="text-[10px] text-muted-foreground">
+   754→                        Tech: {labelFor(a.technicianId)} · Detected {fmtDate(a.detectedAt, true)}
+   755→                      </p>
+   756→                    </div>
+   757→                    <Badge variant={a.status === "resolved" || a.status === "dismissed" ? "outline" : "secondary"} className="text-[9px] capitalize">
+   758→                      {a.status}
+   759→                    </Badge>
+   760→                  </div>
+   761→                ))}
+   762→              </div>
+   763→            )}
+   764→
+   765→            {disputes.length > 0 && (
+   766→              <div className="space-y-1.5">
+   767→                <p className="text-[10px] uppercase tracking-wide text-muted-foreground font-semibold flex items-center gap-1">
+   768→                  <Scale className="h-3 w-3" /> Disputes
+   769→                </p>
+   770→                {disputes.map((d) => (
+   771→                  <div
+   772→                    key={d.id}
+   773→                    className="flex items-start gap-2 rounded-md border border-border/60 p-2.5"
+   774→                  >
+   775→                    <Scale className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
+   776→                    <div className="flex-1 min-w-0">
+   777→                      <p className="text-xs font-medium truncate">{d.reason}</p>
+   778→                      <p className="text-[10px] text-muted-foreground">
+   779→                        Tech: {labelFor(d.technicianId)}
+   780→                        {d.programId ? ` · ${labelFor(d.programId)}` : ""}
+   781→                        {" · "}Opened {fmtDate(d.openedAt, true)}
+   782→                      </p>
+   783→                    </div>
+   784→                    <Badge variant={disputeVariant(d.status)} className="text-[9px] capitalize">
+   785→                      {d.status}
+   786→                    </Badge>
+   787→                  </div>
+   788→                ))}
+   789→              </div>
+   790→            )}
+   791→          </div>
+   792→        )}
+   793→      </CardContent>
+   794→    </Card>
+   795→  );
+   796→}
+   797→
+   798→// ---------------------------------------------------------------------------
+   799→// Record Measurement dialog — fetches schemas + sources + profiles, POSTs
+   800→// ---------------------------------------------------------------------------
+   801→
+   802→function RecordMeasurementDialog({
+   803→  open,
+   804→  onOpenChange,
+   805→  onRecorded,
+   806→}: {
+   807→  open: boolean;
+   808→  onOpenChange: (v: boolean) => void;
+   809→  onRecorded: () => void;
+   810→}) {
+   811→  const [schemas, setSchemas] = useState<HealthSchema[]>([]);
+   812→  const [sources, setSources] = useState<HealthSource[]>([]);
+   813→  const [profiles, setProfiles] = useState<HealthProfile[]>([]);
+   814→  const [loadingMeta, setLoadingMeta] = useState(false);
+   815→  const [metaError, setMetaError] = useState<string | null>(null);
+   816→
+   817→  const [schemaId, setSchemaId] = useState("");
+   818→  const [sourceId, setSourceId] = useState("");
+   819→  const [profileId, setProfileId] = useState("");
+   820→  const [unitId, setUnitId] = useState("");
+   821→  const [value, setValue] = useState("");
+   822→  const [tags, setTags] = useState("technician-recorded");
+   823→  const [submitting, setSubmitting] = useState(false);
+   824→
+   825→  // Load metadata the first time the dialog opens.
+   826→  useEffect(() => {
+   827→    if (!open) return;
+   828→    let cancelled = false;
+   829→    setLoadingMeta(true);
+   830→    setMetaError(null);
+   831→    (async () => {
+   832→      try {
+   833→        const [schemaRes, sourceRes, profileRes] = await Promise.allSettled([
+   834→          fetch("/api/health/schemas", { cache: "no-store" }),
+   835→          fetch("/api/health/sources", { cache: "no-store" }),
+   836→          fetch("/api/health/profiles", { cache: "no-store" }),
+   837→        ]);
+   838→
+   839→        const readJson = async <T,>(r: PromiseSettledResult<Response>, fallback: T): Promise<T> => {
+   840→          if (r.status !== "fulfilled") return fallback;
+   841→          try {
+   842→            const j = (await r.value.json()) as { ok?: boolean; data?: T };
+   843→            if (!j?.ok) return fallback;
+   844→            return (j.data as T) ?? fallback;
+   845→          } catch {
+   846→            return fallback;
+   847→          }
+   848→        };
+   849→
+   850→        const schemaData = await readJson<HealthSchema[] | { schemas?: HealthSchema[] }>(schemaRes, []);
+   851→        const sourceData = await readJson<{ sources?: HealthSource[] } | HealthSource[]>(sourceRes, { sources: [] });
+   852→        const profileData = await readJson<HealthProfile[] | { profiles?: HealthProfile[] }>(profileRes, []);
+   853→
+   854→        const schemasArr = Array.isArray(schemaData) ? schemaData : [];
+   855→        const sourcesArr = Array.isArray(sourceData) ? sourceData : sourceData.sources ?? [];
+   856→        const profilesArr = Array.isArray(profileData) ? profileData : [];
+   857→
+   858→        if (cancelled) return;
+   859→        setSchemas(schemasArr);
+   860→        setSources(sourcesArr);
+   861→        setProfiles(profilesArr);
+   862→
+   863→        // Defaults — pick first option of each so the form is submittable immediately.
+   864→        if (schemasArr[0] && !schemaId) {
+   865→          setSchemaId(schemasArr[0].id);
+   866→          const u = schemasArr[0].defaultUnit ?? schemasArr[0].allowedUnits?.[0] ?? "";
+   867→          if (u) setUnitId(u);
+   868→        }
+   869→        if (sourcesArr[0] && !sourceId) setSourceId(sourcesArr[0].id);
+   870→        if (profilesArr[0] && !profileId) setProfileId(profilesArr[0].id);
+   871→
+   872→        if (schemasArr.length === 0) {
+   873→          setMetaError("No measurement schemas available. Ensure the health platform is seeded.");
+   874→        }
+   875→      } catch (err) {
+   876→        if (!cancelled) {
+   877→          const msg = err instanceof Error ? err.message : "Could not load measurement metadata";
+   878→          setMetaError(msg);
+   879→          toast({ title: "Load failed", description: msg, variant: "destructive" });
+   880→        }
+   881→      } finally {
+   882→        if (!cancelled) setLoadingMeta(false);
+   883→      }
+   884→    })();
+   885→    return () => { cancelled = true; };
+   886→  }, [open]);
+   887→
+   888→  // When schema changes, sync the unit to the schema's default / first allowed unit.
+   889→  const onSchemaChange = (id: string) => {
+   890→    setSchemaId(id);
+   891→    const s = schemas.find((x) => x.id === id);
+   892→    const u = s?.defaultUnit ?? s?.allowedUnits?.[0] ?? "";
+   893→    if (u) setUnitId(u);
+   894→  };
+   895→
+   896→  const submit = async () => {
+   897→    if (!schemaId || !profileId || value === "" || !unitId) {
+   898→      toast({
+   899→        title: "Missing fields",
+   900→        description: "Schema, profile, value and unit are required.",
+   901→        variant: "destructive",
+   902→      });
+   903→      return;
+   904→    }
+   905→    setSubmitting(true);
+   906→    try {
+   907→      const parsed = Number(value);
+   908→      if (Number.isNaN(parsed)) {
+   909→        toast({ title: "Invalid value", description: "Value must be a number.", variant: "destructive" });
+   910→        setSubmitting(false);
+   911→        return;
+   912→      }
+   913→      const body = {
+   914→        schemaId,
+   915→        profileId,
+   916→        value: parsed,
+   917→        unitId,
+   918→        sourceId: sourceId || undefined,
+   919→        collectedBy: "technician",
+   920→        tags: tags
+   921→          .split(",")
+   922→          .map((t) => t.trim())
+   923→          .filter(Boolean),
+   924→      };
+   925→      const res = await fetch("/api/health/measurements", {
+   926→        method: "POST",
+   927→        headers: { "Content-Type": "application/json" },
+   928→        body: JSON.stringify(body),
+   929→      });
+   930→      const data = (await res.json()) as {
+   931→        ok?: boolean;
+   932→        data?: { measurementId?: string; verificationState?: string };
+   933→        error?: { message?: string };
+   934→      };
+   935→      if (data.ok) {
+   936→        toast({
+   937→          title: "Measurement recorded",
+   938→          description: `Verification state: ${data.data?.verificationState ?? "pending"}`,
+   939→        });
+   940→        setValue("");
+   941→        onRecorded();
+   942→      } else {
+   943→        toast({
+   944→          title: "Recording failed",
+   945→          description: data.error?.message ?? "Server rejected the measurement",
+   946→          variant: "destructive",
+   947→        });
+   948→      }
+   949→    } catch (err) {
+   950→      toast({
+   951→        title: "Network error",
+   952→        description: err instanceof Error ? err.message : "Could not reach server",
+   953→        variant: "destructive",
+   954→      });
+   955→    } finally {
+   956→      setSubmitting(false);
+   957→    }
+   958→  };
+   959→
+   960→  const selectedSchema = schemas.find((s) => s.id === schemaId);
+   961→  const allowedUnits = selectedSchema?.allowedUnits ?? [];
+   962→
+   963→  return (
+   964→    <Dialog open={open} onOpenChange={onOpenChange}>
+   965→      <DialogContent className="sm:max-w-md">
+   966→        <DialogHeader>
+   967→          <DialogTitle>Record Measurement</DialogTitle>
+   968→          <DialogDescription>
+   969→            Submit a new measurement against a participant&apos;s health profile. The platform
+   970→            validates it against the schema and assigns a verification state.
+   971→          </DialogDescription>
+   972→        </DialogHeader>
+   973→
+   974→        {loadingMeta ? (
+   975→          <div className="py-6 text-center text-sm text-muted-foreground flex items-center justify-center gap-2">
+   976→            <RefreshCw className="h-4 w-4 animate-spin" /> Loading measurement metadata…
+   977→          </div>
+   978→        ) : metaError ? (
+   979→          <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs text-destructive">
+   980→            {metaError}
+   981→          </div>
+   982→        ) : (
+   983→          <div className="space-y-3 py-1">
+   984→            <div className="space-y-1.5">
+   985→              <Label>Measurement Type</Label>
+   986→              <Select value={schemaId} onValueChange={onSchemaChange}>
+   987→                <SelectTrigger><SelectValue placeholder="Select type" /></SelectTrigger>
+   988→                <SelectContent className="max-h-72">
+   989→                  {schemas.map((s) => (
+   990→                    <SelectItem key={s.id} value={s.id}>
+   991→                      {s.name}
+   992→                      {s.category ? ` · ${s.category}` : ""}
+   993→                    </SelectItem>
+   994→                  ))}
+   995→                </SelectContent>
+   996→              </Select>
+   997→            </div>
+   998→
+   999→            <div className="grid grid-cols-2 gap-3">
+  1000→              <div className="space-y-1.5">
+  1001→                <Label>Unit</Label>
+  1002→                {allowedUnits.length > 0 ? (
+  1003→                  <Select value={unitId} onValueChange={setUnitId}>
+  1004→                    <SelectTrigger><SelectValue placeholder="Select unit" /></SelectTrigger>
+  1005→                    <SelectContent>
+  1006→                      {allowedUnits.map((u) => (
+  1007→                        <SelectItem key={u} value={u}>{u}</SelectItem>
+  1008→                      ))}
+  1009→                    </SelectContent>
+  1010→                  </Select>
+  1011→                ) : (
+  1012→                  <Input
+  1013→                    value={unitId}
+  1014→                    onChange={(e) => setUnitId(e.target.value)}
+  1015→                    placeholder="unit id"
+  1016→                  />
+  1017→                )}
+  1018→              </div>
+  1019→              <div className="space-y-1.5">
+  1020→                <Label htmlFor="meas-value">Value</Label>
+  1021→                <Input
+  1022→                  id="meas-value"
+  1023→                  type="number"
+  1024→                  step="any"
+  1025→                  value={value}
+  1026→                  onChange={(e) => setValue(e.target.value)}
+  1027→                  placeholder="0.0"
+  1028→                />
+  1029→              </div>
+  1030→            </div>
+  1031→
+  1032→            <div className="space-y-1.5">
+  1033→              <Label>Source</Label>
+  1034→              <Select value={sourceId} onValueChange={setSourceId}>
+  1035→                <SelectTrigger><SelectValue placeholder="Select source" /></SelectTrigger>
+  1036→                <SelectContent className="max-h-72">
+  1037→                  {sources.map((s) => (
+  1038→                    <SelectItem key={s.id} value={s.id}>
+  1039→                      {s.label}
+  1040→                      {s.type ? ` · ${s.type}` : ""}
+  1041→                    </SelectItem>
+  1042→                  ))}
+  1043→                </SelectContent>
+  1044→              </Select>
+  1045→            </div>
+  1046→
+  1047→            <div className="space-y-1.5">
+  1048→              <Label>Participant Profile</Label>
+  1049→              {profiles.length > 0 ? (
+  1050→                <Select value={profileId} onValueChange={setProfileId}>
+  1051→                  <SelectTrigger><SelectValue placeholder="Select profile" /></SelectTrigger>
+  1052→                  <SelectContent className="max-h-72">
+  1053→                    {profiles.map((p) => (
+  1054→                      <SelectItem key={p.id} value={p.id}>
+  1055→                        {p.id}
+  1056→                        {p.accountId ? ` · ${p.accountId}` : ""}
+  1057→                      </SelectItem>
+  1058→                    ))}
+  1059→                  </SelectContent>
+  1060→                </Select>
+  1061→              ) : (
+  1062→                <Input
+  1063→                  value={profileId}
+  1064→                  onChange={(e) => setProfileId(e.target.value)}
+  1065→                  placeholder="prof_..."
+  1066→                />
+  1067→              )}
+  1068→            </div>
+  1069→
+  1070→            <div className="space-y-1.5">
+  1071→              <Label htmlFor="meas-tags">Tags (comma-separated)</Label>
+  1072→              <Input
+  1073→                id="meas-tags"
+  1074→                value={tags}
+  1075→                onChange={(e) => setTags(e.target.value)}
+  1076→                placeholder="technician-recorded"
+  1077→              />
+  1078→            </div>
+  1079→
+  1080→            {selectedSchema && (
+  1081→              <div className="flex items-center gap-2 text-[10px] text-muted-foreground pt-1">
+  1082→                <Timer className="h-3 w-3" />
+  1083→                <span>
+  1084→                  Type: {selectedSchema.valueType}
+  1085→                  {selectedSchema.category ? ` · ${selectedSchema.category}` : ""}
+  1086→                </span>
+  1087→              </div>
+  1088→            )}
+  1089→          </div>
+  1090→        )}
+  1091→
+  1092→        <DialogFooter>
+  1093→          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+  1094→            Cancel
+  1095→          </Button>
+  1096→          <Button
+  1097→            onClick={submit}
+  1098→            disabled={submitting || loadingMeta || !!metaError}
+  1099→            className="bg-[var(--brand)] text-[var(--brand-foreground)] hover:opacity-90"
+  1100→          >
+  1101→            {submitting ? (
+  1102→              <>
+  1103→                <RefreshCw className="h-4 w-4 mr-1 animate-spin" /> Recording…
+  1104→              </>
+  1105→            ) : (
+  1106→              <>
+  1107→                <TrendingUp className="h-4 w-4 mr-1" /> Record Measurement
+  1108→              </>
+  1109→            )}
+  1110→          </Button>
+  1111→        </DialogFooter>
+  1112→      </DialogContent>
+  1113→    </Dialog>
+  1114→  );
+  1115→}
+  1116→
+  1117→// ---------------------------------------------------------------------------
+  1118→// Shared primitives
+  1119→// ---------------------------------------------------------------------------
+  1120→
+  1121→function StatCard({
+  1122→  icon,
+  1123→  label,
+  1124→  value,
+  1125→  hint,
+  1126→  loading,
+  1127→  accent,
+  1128→}: {
+  1129→  icon: React.ReactNode;
+  1130→  label: string;
+  1131→  value: React.ReactNode;
+  1132→  hint?: string;
+  1133→  loading?: boolean;
+  1134→  accent?: boolean;
+  1135→}) {
+  1136→  return (
+  1137→    <Card className={accent ? "border-[var(--brand)]/40 bg-[var(--brand-muted)]/20" : ""}>
+  1138→      <CardContent className="p-4">
+  1139→        <div className="flex items-center gap-2 mb-1">
+  1140→          <div
+  1141→            className={`flex h-7 w-7 items-center justify-center rounded-md ${
+  1142→              accent ? "bg-[var(--brand)] text-[var(--brand-foreground)]" : "bg-muted text-muted-foreground"
+  1143→            }`}
+  1144→          >
+  1145→            {icon}
+  1146→          </div>
+  1147→          <p className="text-xs text-muted-foreground">{label}</p>
+  1148→        </div>
+  1149→        <p className={`text-2xl font-bold ${accent ? "text-[var(--brand)]" : ""}`}>
+  1150→          {loading ? <span className="inline-block h-6 w-10 rounded bg-muted animate-pulse align-middle" /> : value}
+  1151→        </p>
+  1152→        {hint && <p className="text-[10px] text-muted-foreground mt-0.5">{hint}</p>}
+  1153→      </CardContent>
+  1154→    </Card>
+  1155→  );
+  1156→}
+  1157→
+  1158→function Detail({
+  1159→  label,
+  1160→  value,
+  1161→  mono,
+  1162→  icon,
+  1163→}: {
+  1164→  label: string;
+  1165→  value: string;
+  1166→  mono?: boolean;
+  1167→  icon?: React.ReactNode;
+  1168→}) {
+  1169→  return (
+  1170→    <div>
+  1171→      <p className="text-[10px] uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+  1172→        {icon}
+  1173→        {label}
+  1174→      </p>
+  1175→      <p className={`text-xs font-medium truncate ${mono ? "font-mono" : ""}`} title={value}>
+  1176→        {value}
+  1177→      </p>
+  1178→    </div>
+  1179→  );
+  1180→}
+  1181→
+  1182→function ListSkeleton({ rows = 3 }: { rows?: number }) {
+  1183→  return (
+  1184→    <div className="space-y-2">
+  1185→      {Array.from({ length: rows }).map((_, i) => (
+  1186→        <div key={i} className="rounded-lg border border-border/60 p-3">
+  1187→          <div className="flex items-center gap-3">
+  1188→            <div className="h-8 w-8 rounded-full bg-muted animate-pulse" />
+  1189→            <div className="flex-1 space-y-1.5">
+  1190→              <div className="h-3 w-2/3 rounded bg-muted animate-pulse" />
+  1191→              <div className="h-2.5 w-1/2 rounded bg-muted animate-pulse" />
+  1192→            </div>
+  1193→            <div className="h-5 w-12 rounded bg-muted animate-pulse" />
+  1194→          </div>
+  1195→        </div>
+  1196→      ))}
+  1197→    </div>
+  1198→  );
+  1199→}
+  1200→
+  1201→function EmptyState({ icon, message }: { icon: React.ReactNode; message: string }) {
+  1202→  return (
+  1203→    <div className="flex flex-col items-center justify-center py-8 text-center">
+  1204→      <div className="text-muted-foreground/60 mb-2">{icon}</div>
+  1205→      <p className="text-sm text-muted-foreground">{message}</p>
+  1206→    </div>
+  1207→  );
+  1208→}
+  1209→
+  1210→// ---------------------------------------------------------------------------
+  1211→// Helpers
+  1212→// ---------------------------------------------------------------------------
+  1213→
+  1214→function fmtDate(iso: string | undefined | null, short = false): string {
+  1215→  if (!iso) return "—";
+  1216→  const d = new Date(iso);
+  1217→  if (Number.isNaN(d.getTime())) return iso;
+  1218→  if (short) {
+  1219→    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  1220→  }
+  1221→  return d.toLocaleString(undefined, {
+  1222→    year: "numeric",
+  1223→    month: "short",
+  1224→    day: "numeric",
+  1225→    hour: "2-digit",
+  1226→    minute: "2-digit",
+  1227→  });
+  1228→}
+  1229→
+  1230→// Make raw IDs (prof_xxx, tech_yyy, prog_zzz) slightly friendlier to read.
+  1231→function labelFor(id: string): string {
+  1232→  if (!id) return "—";
+  1233→  return id;
+  1234→}
+  1235→

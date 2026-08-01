@@ -29,9 +29,11 @@ export async function GET() {
       const missions = getMissionManager();
       const goals = getGoalManager();
       const habits = getHabitManager();
+      // Demo accounts use the demo participant ID so they see seeded data
+      const participantId = (session.isDemo ? "acc_demo_1" : session.accountId) as never;
       data.missions = {
         stats: missions.getStats(),
-        today: missions.getToday(session.accountId as never).map((m) => ({ id: m.id, title: m.title, category: m.category, state: m.state, priority: m.priority, difficulty: m.difficulty, aiGenerated: m.aiGenerated })),
+        today: missions.getToday(participantId).map((m) => ({ id: m.id, title: m.title, category: m.category, state: m.state, priority: m.priority, difficulty: m.difficulty, aiGenerated: m.aiGenerated })),
       };
       data.goals = {
         stats: goals.getStats(),

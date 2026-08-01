@@ -1,10 +1,11 @@
-import { withPlatform, getHealthSchemas, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getHealthSchemas, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return withPlatform(() => {
+  return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     return getHealthSchemas().list().map((s) => ({
       id: s.id, slug: s.slug, name: s.name, category: s.category,
       valueType: s.valueType, programId: s.programId, allowedUnits: s.allowedUnits,

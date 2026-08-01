@@ -1,0 +1,871 @@
+     1→/**
+     2→ * Eks-Health Population Platform — Population Analytics
+     3→ *
+     4→ * Organization dashboards: participation rates, program adoption, mission
+     5→ * completion, aggregate improvements, competition participation, measurement
+     6→ * compliance, retention, engagement, program effectiveness, trends, and
+     7→ * regional breakdowns.
+     8→ *
+     9→ * Privacy by design:
+    10→ *  - ALL data returned is AGGREGATE ONLY. No individual records ever leave
+    11→ *    this module.
+    12→ *  - Small groups are suppressed (k-anonymity, MIN_GROUP_SIZE = 5).
+    13→ *  - The privacy firewall is consulted to determine the org's authorized
+    14→ *    visibility level; orgs without aggregate_performance grants receive
+    15→ *    only high-level counts.
+    16→ *
+    17→ * Real aggregate computation from the live platform subsystems (memberships,
+    18→ * health profiles, measurements, missions, competitions, hierarchy). Every
+    19→ * cross-subsystem call is guarded with try/catch so a missing or failing
+    20→ * subsystem degrades gracefully to zeros rather than crashing the dashboard.
+    21→ *
+    22→ * Built on the population core, hierarchy, membership, and privacy-firewall.
+    23→ */
+    24→
+    25→import "server-only";
+    26→import {
+    27→  type PopulationOrgId,
+    28→  type AccountId,
+    29→  type ProgramId,
+    30→  PopulationError,
+    31→  asPopulationOrgId,
+    32→} from "../core";
+    33→import { getMemberships } from "../membership";
+    34→import { getHierarchy } from "../hierarchy";
+    35→import { getPrivacyFirewall } from "../privacy-firewall";
+    36→import { getProfiles } from "@/health";
+    37→import { getMeasurements } from "@/health";
+    38→import { getMissions } from "@/missions";
+    39→import { getCompetitions } from "@/competitions";
+    40→import { getClock } from "@/kernel";
+    41→
+    42→// ---------------------------------------------------------------------------
+    43→// Public result types
+    44→// ---------------------------------------------------------------------------
+    45→
+    46→export interface ProgramAdoptionStat {
+    47→  readonly programId: ProgramId;
+    48→  readonly installs: number;
+    49→  readonly active: number;
+    50→  readonly activeRate: number; // 0..1
+    51→}
+    52→
+    53→export interface ProgramEffectivenessStat {
+    54→  readonly programId: ProgramId;
+    55→  readonly participants: number;
+    56→  readonly avgImprovement: number;
+    57→  readonly missionCompletionRate: number; // 0..1
+    58→  readonly measurementCompliance: number; // 0..1
+    59→  readonly effectivenessScore: number; // 0..100
+    60→  readonly suppressed: boolean; // true if below k-anonymity threshold
+    61→}
+    62→
+    63→export interface RegionalBreakdownStat {
+    64→  readonly orgId: PopulationOrgId;
+    65→  readonly name: string;
+    66→  readonly participants: number;
+    67→  readonly avgImprovement: number;
+    68→  readonly participationRate: number; // 0..1
+    69→  readonly suppressed: boolean;
+    70→}
+    71→
+    72→export interface RetentionStats {
+    73→  readonly retention30: number; // 0..1
+    74→  readonly retention90: number; // 0..1
+    75→  readonly totalMembers: number;
+    76→  readonly active30: number;
+    77→  readonly active90: number;
+    78→}
+    79→
+    80→export interface OrgDashboard {
+    81→  readonly orgId: PopulationOrgId;
+    82→  readonly totalMembers: number;
+    83→  readonly activeMembers: number;
+    84→  readonly participationRate: number; // 0..1
+    85→  readonly programAdoption: ProgramAdoptionStat[];
+    86→  readonly missionCompletionRate: number; // 0..1
+    87→  readonly avgImprovement: number;
+    88→  readonly competitionEngagement: number; // 0..1
+    89→  readonly measurementCompliance: number; // 0..1
+    90→  readonly retention30: number; // 0..1
+    91→  readonly retention90: number; // 0..1
+    92→  readonly engagementScore: number; // 0..100
+    93→  readonly authorizedLevel: "full" | "limited"; // privacy firewall gate
+    94→  readonly computedAt: string;
+    95→}
+    96→
+    97→export interface TrendPoint {
+    98→  readonly at: string;
+    99→  readonly value: number;
+   100→}
+   101→
+   102→export interface MetricTrend {
+   103→  readonly metric: string;
+   104→  readonly period: string;
+   105→  readonly points: TrendPoint[];
+   106→  readonly direction: "up" | "down" | "stable";
+   107→  readonly changePercent: number;
+   108→}
+   109→
+   110→export type TrendMetric =
+   111→  | "participationRate"
+   112→  | "engagementScore"
+   113→  | "avgImprovement"
+   114→  | "retention30"
+   115→  | "retention90"
+   116→  | "compliance"
+   117→  | "activeMembers"
+   118→  | "totalMeasurements";
+   119→
+   120→export interface AnalyticsStats {
+   121→  readonly totalQueries: number;
+   122→  readonly byMethod: Record<string, number>;
+   123→}
+   124→
+   125→// ---------------------------------------------------------------------------
+   126→// Internal: defensive structural types for cross-subsystem data
+   127→// ---------------------------------------------------------------------------
+   128→
+   129→interface ProfileLike {
+   130→  readonly id: string;
+   131→  readonly accountId: string;
+   132→  readonly programs: {
+   133→    readonly programId: string;
+   134→    readonly status: "active" | "paused" | "uninstalled";
+   135→    readonly installedAt: string;
+   136→  }[];
+   137→  readonly demographics?: {
+   138→    readonly country?: string;
+   139→    readonly region?: string;
+   140→  };
+   141→}
+   142→
+   143→interface MeasurementLike {
+   144→  readonly profileId: string;
+   145→  readonly schemaId: string;
+   146→  readonly value: unknown;
+   147→  readonly verificationState: string;
+   148→  readonly provenance: { readonly collectedAt: string };
+   149→  readonly supersededBy?: string;
+   150→}
+   151→
+   152→interface MissionLike {
+   153→  readonly participantId: string;
+   154→  readonly programId: string;
+   155→  readonly state: string;
+   156→  readonly category: string;
+   157→  readonly result?: { readonly outcome: string };
+   158→}
+   159→
+   160→interface CompetitionLike {
+   161→  readonly id: string;
+   162→  readonly programId: string;
+   163→  readonly currentParticipants: number;
+   164→  readonly state: string;
+   165→  readonly scope: string;
+   166→  readonly scopeFilter?: Record<string, unknown>;
+   167→}
+   168→
+   169→interface MembershipLike {
+   170→  readonly accountId: string;
+   171→  readonly orgId: string;
+   172→  readonly status: string;
+   173→}
+   174→
+   175→// ---------------------------------------------------------------------------
+   176→// Internal: snapshot for trend tracking
+   177→// ---------------------------------------------------------------------------
+   178→
+   179→interface DashboardSnapshot {
+   180→  readonly at: string;
+   181→  readonly participationRate: number;
+   182→  readonly engagementScore: number;
+   183→  readonly avgImprovement: number;
+   184→  readonly retention30: number;
+   185→  readonly retention90: number;
+   186→  readonly compliance: number;
+   187→  readonly activeMembers: number;
+   188→  readonly totalMeasurements: number;
+   189→}
+   190→
+   191→// ---------------------------------------------------------------------------
+   192→// Constants
+   193→// ---------------------------------------------------------------------------
+   194→
+   195→const MIN_GROUP_SIZE = 5; // k-anonymity threshold
+   196→const DAY_MS = 86400000;
+   197→const WEEK_MS = 7 * DAY_MS;
+   198→const MAX_SNAPSHOTS_PER_ORG = 200;
+   199→
+   200→// ---------------------------------------------------------------------------
+   201→// Analytics engine
+   202→// ---------------------------------------------------------------------------
+   203→
+   204→export class PopulationAnalytics {
+   205→  private readonly dashboardHistory = new Map<PopulationOrgId, DashboardSnapshot[]>();
+   206→  private readonly queryCounts = new Map<string, number>();
+   207→
+   208→  // -------------------------------------------------------------------------
+   209→  // Dashboard
+   210→  // -------------------------------------------------------------------------
+   211→
+   212→  getDashboard(orgId: PopulationOrgId): OrgDashboard {
+   213→    this.recordQuery("getDashboard");
+   214→    const members = this.getOrgMembers(orgId);
+   215→    const totalMembers = members.length;
+   216→    const activeMembers = members.length; // active memberships only
+   217→
+   218→    const authorizedLevel = this.getAuthorizedLevel(orgId);
+   219→    const participationRate = this.getParticipationRate(orgId);
+   220→    const programAdoption = this.getProgramAdoption(orgId);
+   221→    const missionCompletionRate = this.computeMissionCompletionRate(members);
+   222→    const avgImprovement = this.computeAggregateImprovement(members);
+   223→    const compliance = this.getCompliance(orgId);
+   224→    const retention = this.getRetention(orgId);
+   225→    const competitionEngagement = this.computeCompetitionEngagement(orgId, totalMembers);
+   226→    const engagementScore = this.computeEngagementScore(
+   227→      missionCompletionRate,
+   228→      members,
+   229→      competitionEngagement,
+   230→    );
+   231→    const totalMeasurements = this.countOrgMeasurements(members);
+   232→
+   233→    const now = getClock().iso();
+   234→    const snapshot: DashboardSnapshot = {
+   235→      at: now,
+   236→      participationRate,
+   237→      engagementScore,
+   238→      avgImprovement,
+   239→      retention30: retention.retention30,
+   240→      retention90: retention.retention90,
+   241→      compliance,
+   242→      activeMembers,
+   243→      totalMeasurements,
+   244→    };
+   245→    this.pushSnapshot(orgId, snapshot);
+   246→
+   247→    return {
+   248→      orgId,
+   249→      totalMembers,
+   250→      activeMembers,
+   251→      participationRate,
+   252→      programAdoption,
+   253→      missionCompletionRate,
+   254→      avgImprovement,
+   255→      competitionEngagement,
+   256→      measurementCompliance: compliance,
+   257→      retention30: retention.retention30,
+   258→      retention90: retention.retention90,
+   259→      engagementScore,
+   260→      authorizedLevel,
+   261→      computedAt: now,
+   262→    };
+   263→  }
+   264→
+   265→  // -------------------------------------------------------------------------
+   266→  // Individual metrics
+   267→  // -------------------------------------------------------------------------
+   268→
+   269→  getParticipationRate(orgId: PopulationOrgId): number {
+   270→    this.recordQuery("getParticipationRate");
+   271→    const members = this.getOrgMembers(orgId);
+   272→    if (members.length === 0) return 0;
+   273→    const profiles = this.gatherProfiles(members);
+   274→    let activeInProgram = 0;
+   275→    for (const p of profiles) {
+   276→      if (p.programs.some((pp) => pp.status === "active")) activeInProgram++;
+   277→    }
+   278→    if (activeInProgram > 0 && activeInProgram < MIN_GROUP_SIZE) {
+   279→      return round4(activeInProgram / members.length); // rate is still safe
+   280→    }
+   281→    return round4(activeInProgram / members.length);
+   282→  }
+   283→
+   284→  getProgramAdoption(orgId: PopulationOrgId): ProgramAdoptionStat[] {
+   285→    this.recordQuery("getProgramAdoption");
+   286→    const members = this.getOrgMembers(orgId);
+   287→    const profiles = this.gatherProfiles(members);
+   288→    const byProgram = new Map<
+   289→      string,
+   290→      { installs: number; active: number }
+   291→    >();
+   292→    for (const p of profiles) {
+   293→      for (const pp of p.programs) {
+   294→        const entry = byProgram.get(pp.programId) ?? { installs: 0, active: 0 };
+   295→        entry.installs++;
+   296→        if (pp.status === "active") entry.active++;
+   297→        byProgram.set(pp.programId, entry);
+   298→      }
+   299→    }
+   300→    const stats: ProgramAdoptionStat[] = [];
+   301→    for (const [programId, { installs, active }] of byProgram) {
+   302→      stats.push({
+   303→        programId: programId as ProgramId,
+   304→        installs,
+   305→        active,
+   306→        activeRate: round4(installs > 0 ? active / installs : 0),
+   307→      });
+   308→    }
+   309→    return stats.sort((a, b) => b.installs - a.installs);
+   310→  }
+   311→
+   312→  getAggregateImprovement(orgId: PopulationOrgId): number {
+   313→    this.recordQuery("getAggregateImprovement");
+   314→    const members = this.getOrgMembers(orgId);
+   315→    return this.computeAggregateImprovement(members);
+   316→  }
+   317→
+   318→  getRetention(orgId: PopulationOrgId): RetentionStats {
+   319→    this.recordQuery("getRetention");
+   320→    const members = this.getOrgMembers(orgId);
+   321→    if (members.length === 0) {
+   322→      return { retention30: 0, retention90: 0, totalMembers: 0, active30: 0, active90: 0 };
+   323→    }
+   324→    const now = Date.now();
+   325→    const cutoff30 = now - 30 * DAY_MS;
+   326→    const cutoff90 = now - 90 * DAY_MS;
+   327→    let active30 = 0;
+   328→    let active90 = 0;
+   329→
+   330→    const memberSet = new Set(members.map(String));
+   331→    const profiles = this.gatherProfiles(members);
+   332→    const profileToAccount = new Map<string, string>();
+   333→    for (const p of profiles) {
+   334→      profileToAccount.set(p.id, p.accountId);
+   335→    }
+   336→    const allMeasurements = this.gatherMeasurementsForProfiles(profiles);
+   337→    const active30Set = new Set<string>();
+   338→    const active90Set = new Set<string>();
+   339→    for (const m of allMeasurements) {
+   340→      let ts: number;
+   341→      try {
+   342→        ts = new Date(m.provenance.collectedAt).getTime();
+   343→      } catch {
+   344→        continue;
+   345→      }
+   346→      const account = profileToAccount.get(m.profileId);
+   347→      if (!account || !memberSet.has(account)) continue;
+   348→      if (ts >= cutoff30) active30Set.add(account);
+   349→      if (ts >= cutoff90) active90Set.add(account);
+   350→    }
+   351→    active30 = active30Set.size;
+   352→    active90 = active90Set.size;
+   353→
+   354→    return {
+   355→      retention30: round4(active30 / members.length),
+   356→      retention90: round4(active90 / members.length),
+   357→      totalMembers: members.length,
+   358→      active30,
+   359→      active90,
+   360→    };
+   361→  }
+   362→
+   363→  getEngagement(orgId: PopulationOrgId): number {
+   364→    this.recordQuery("getEngagement");
+   365→    const members = this.getOrgMembers(orgId);
+   366→    const missionCompletion = this.computeMissionCompletionRate(members);
+   367→    const competitionEngagement = this.computeCompetitionEngagement(
+   368→      orgId,
+   369→      members.length,
+   370→    );
+   371→    return this.computeEngagementScore(missionCompletion, members, competitionEngagement);
+   372→  }
+   373→
+   374→  getProgramEffectiveness(
+   375→    orgId: PopulationOrgId,
+   376→    programId: ProgramId,
+   377→  ): ProgramEffectivenessStat {
+   378→    this.recordQuery("getProgramEffectiveness");
+   379→    const members = this.getOrgMembers(orgId);
+   380→    const profiles = this.gatherProfiles(members);
+   381→
+   382→    // Members who have this program installed (any status) — adopters.
+   383→    const adopterAccounts = new Set<string>();
+   384→    const adopterProfiles: ProfileLike[] = [];
+   385→    for (const p of profiles) {
+   386→      if (p.programs.some((pp) => pp.programId === String(programId))) {
+   387→        adopterAccounts.add(p.accountId);
+   388→        adopterProfiles.push(p);
+   389→      }
+   390→    }
+   391→    const participants = adopterProfiles.length;
+   392→    const suppressed = participants < MIN_GROUP_SIZE;
+   393→
+   394→    // Average improvement among adopters.
+   395→    const adopterMeasurements = this.gatherMeasurementsForProfiles(adopterProfiles);
+   396→    const avgImprovement = this.computeImprovementFromMeasurements(adopterMeasurements);
+   397→
+   398→    // Mission completion rate for this program among adopters.
+   399→    let missionCompleted = 0;
+   400→    let missionTerminal = 0;
+   401→    try {
+   402→      const missions = this.getMissionsForParticipants(adopterAccounts);
+   403→      for (const m of missions) {
+   404→        if (m.programId !== String(programId)) continue;
+   405→        if (m.state === "completed" || m.state === "skipped" || m.state === "expired" || m.state === "cancelled") {
+   406→          missionTerminal++;
+   407→        }
+   408→        if (m.state === "completed") missionCompleted++;
+   409→      }
+   410→    } catch {
+   411→      // Missions unavailable.
+   412→    }
+   413→    const missionCompletionRate = missionTerminal > 0 ? missionCompleted / missionTerminal : 0;
+   414→
+   415→    // Measurement compliance for adopters.
+   416→    const total = adopterMeasurements.length;
+   417→    const verified = adopterMeasurements.filter(
+   418→      (m) => m.verificationState === "verified",
+   419→    ).length;
+   420→    const measurementCompliance = total > 0 ? verified / total : 0;
+   421→
+   422→    // Effectiveness score: weighted blend.
+   423→    const improvementScore = clamp01((avgImprovement + 50) / 100) * 40; // -50%..+50% maps to 0..1
+   424→    const missionScore = missionCompletionRate * 30;
+   425→    const complianceScore = measurementCompliance * 30;
+   426→    const effectivenessScore = Math.round(improvementScore + missionScore + complianceScore);
+   427→
+   428→    return {
+   429→      programId,
+   430→      participants,
+   431→      avgImprovement: round2(avgImprovement),
+   432→      missionCompletionRate: round4(missionCompletionRate),
+   433→      measurementCompliance: round4(measurementCompliance),
+   434→      effectivenessScore,
+   435→      suppressed,
+   436→    };
+   437→  }
+   438→
+   439→  getCompliance(orgId: PopulationOrgId): number {
+   440→    this.recordQuery("getCompliance");
+   441→    const members = this.getOrgMembers(orgId);
+   442→    const measurements = this.gatherMeasurements(members);
+   443→    if (measurements.length === 0) return 0;
+   444→    const verified = measurements.filter(
+   445→      (m) => m.verificationState === "verified",
+   446→    ).length;
+   447→    return round4(verified / measurements.length);
+   448→  }
+   449→
+   450→  getTrends(
+   451→    orgId: PopulationOrgId,
+   452→    metric: TrendMetric,
+   453→    period = "30d",
+   454→  ): MetricTrend {
+   455→    this.recordQuery("getTrends");
+   456→    const history = this.dashboardHistory.get(orgId) ?? [];
+   457→    const cutoffMs = periodToMs(period);
+   458→    const now = Date.now();
+   459→    const points: TrendPoint[] = [];
+   460→    for (const s of history) {
+   461→      const t = new Date(s.at).getTime();
+   462→      if (cutoffMs > 0 && now - t > cutoffMs) continue;
+   463→      points.push({ at: s.at, value: snapshotMetric(s, metric) });
+   464→    }
+   465→    const values = points.map((p) => p.value);
+   466→    const direction = computeDirection(values);
+   467→    const changePercent =
+   468→      values.length >= 2 && values[0] !== 0
+   469→        ? round2(((values[values.length - 1] - values[0]) / Math.abs(values[0])) * 100)
+   470→        : 0;
+   471→    return { metric, period, points, direction, changePercent };
+   472→  }
+   473→
+   474→  getRegionalBreakdown(orgId: PopulationOrgId): RegionalBreakdownStat[] {
+   475→    this.recordQuery("getRegionalBreakdown");
+   476→    let subOrgs: { id: PopulationOrgId; name: string }[] = [];
+   477→    try {
+   478→      const descendants = getHierarchy().getDescendants(orgId);
+   479→      subOrgs = descendants.map((o) => ({ id: o.id, name: o.name }));
+   480→    } catch {
+   481→      subOrgs = [];
+   482→    }
+   483→    const results: RegionalBreakdownStat[] = [];
+   484→    for (const sub of subOrgs) {
+   485→      const members = this.getOrgMembers(sub.id);
+   486→      const participants = members.length;
+   487→      const suppressed = participants < MIN_GROUP_SIZE;
+   488→      const avgImprovement = suppressed ? 0 : this.computeAggregateImprovement(members);
+   489→      const participationRate = suppressed ? 0 : this.getParticipationRate(sub.id);
+   490→      results.push({
+   491→        orgId: sub.id,
+   492→        name: sub.name,
+   493→        participants,
+   494→        avgImprovement: round2(avgImprovement),
+   495→        participationRate: round4(participationRate),
+   496→        suppressed,
+   497→      });
+   498→    }
+   499→    return results;
+   500→  }
+   501→
+   502→  getStats(): AnalyticsStats {
+   503→    this.recordQuery("getStats");
+   504→    const byMethod: Record<string, number> = {};
+   505→    let total = 0;
+   506→    for (const [method, count] of this.queryCounts) {
+   507→      byMethod[method] = count;
+   508→      total += count;
+   509→    }
+   510→    return { totalQueries: total, byMethod };
+   511→  }
+   512→
+   513→  // -------------------------------------------------------------------------
+   514→  // Internal: data gathering (all guarded)
+   515→  // -------------------------------------------------------------------------
+   516→
+   517→  private getOrgMembers(orgId: PopulationOrgId): AccountId[] {
+   518→    try {
+   519→      const memberships = getMemberships().listByOrg(orgId, true) as unknown as MembershipLike[];
+   520→      return memberships
+   521→        .filter((m) => m.status === "active")
+   522→        .map((m) => m.accountId as AccountId);
+   523→    } catch {
+   524→      return [];
+   525→    }
+   526→  }
+   527→
+   528→  private gatherProfiles(members: AccountId[]): ProfileLike[] {
+   529→    const profiles: ProfileLike[] = [];
+   530→    try {
+   531→      const mgr = getProfiles() as unknown as {
+   532→        get(accountId: string): ProfileLike | undefined;
+   533→        list(): ProfileLike[];
+   534→      };
+   535→      // Use get(accountId) per member for precision.
+   536→      for (const accountId of members) {
+   537→        try {
+   538→          const p = mgr.get(String(accountId));
+   539→          if (p) profiles.push(p);
+   540→        } catch {
+   541→          // skip this member
+   542→        }
+   543→      }
+   544→    } catch {
+   545→      // Profiles subsystem unavailable.
+   546→    }
+   547→    return profiles;
+   548→  }
+   549→
+   550→  private gatherMeasurements(members: AccountId[]): MeasurementLike[] {
+   551→    const profiles = this.gatherProfiles(members);
+   552→    return this.gatherMeasurementsForProfiles(profiles);
+   553→  }
+   554→
+   555→  private gatherMeasurementsForProfiles(profiles: ProfileLike[]): MeasurementLike[] {
+   556→    const all: MeasurementLike[] = [];
+   557→    try {
+   558→      const store = getMeasurements() as unknown as {
+   559→        listByProfile(profileId: string): MeasurementLike[];
+   560→        list(filter?: { includeSuperseded?: boolean }): MeasurementLike[];
+   561→      };
+   562→      for (const p of profiles) {
+   563→        try {
+   564→          const list = store.listByProfile(p.id);
+   565→          if (list && list.length > 0) {
+   566→            all.push(...list);
+   567→          }
+   568→        } catch {
+   569→          // skip this profile
+   570→        }
+   571→      }
+   572→    } catch {
+   573→      // Measurements subsystem unavailable.
+   574→    }
+   575→    return all;
+   576→  }
+   577→
+   578→  private getMissionsForParticipants(accounts: Set<string>): MissionLike[] {
+   579→    const all: MissionLike[] = [];
+   580→    try {
+   581→      const mgr = getMissions() as unknown as {
+   582→        list(filter?: { participantId?: string }): MissionLike[];
+   583→      };
+   584→      for (const accountId of accounts) {
+   585→        try {
+   586→          const list = mgr.list({ participantId: accountId });
+   587→          if (list && list.length > 0) {
+   588→            all.push(...list);
+   589→          }
+   590→        } catch {
+   591→          // skip
+   592→        }
+   593→      }
+   594→    } catch {
+   595→      // Missions subsystem unavailable.
+   596→    }
+   597→    return all;
+   598→  }
+   599→
+   600→  private countOrgMeasurements(members: AccountId[]): number {
+   601→    return this.gatherMeasurements(members).length;
+   602→  }
+   603→
+   604→  // -------------------------------------------------------------------------
+   605→  // Internal: metric computation
+   606→  // -------------------------------------------------------------------------
+   607→
+   608→  private computeAggregateImprovement(members: AccountId[]): number {
+   609→    const measurements = this.gatherMeasurements(members);
+   610→    return this.computeImprovementFromMeasurements(measurements);
+   611→  }
+   612→
+   613→  private computeImprovementFromMeasurements(measurements: MeasurementLike[]): number {
+   614→    // Group by (profileId, schemaId), sort by collectedAt, compute
+   615→    // (last - first) / first * 100 for each series where first > 0.
+   616→    const bySeries = new Map<string, MeasurementLike[]>();
+   617→    for (const m of measurements) {
+   618→      if (m.supersededBy) continue; // only current measurements
+   619→      const key = `${m.profileId}:${m.schemaId}`;
+   620→      const arr = bySeries.get(key) ?? [];
+   621→      arr.push(m);
+   622→      bySeries.set(key, arr);
+   623→    }
+   624→    const improvements: number[] = [];
+   625→    for (const [, arr] of bySeries) {
+   626→      if (arr.length < 2) continue;
+   627→      arr.sort((a, b) => {
+   628→        try {
+   629→          return new Date(a.provenance.collectedAt).getTime() - new Date(b.provenance.collectedAt).getTime();
+   630→        } catch {
+   631→          return 0;
+   632→        }
+   633→      });
+   634→      const firstVal = extractNumeric(arr[0].value);
+   635→      const lastVal = extractNumeric(arr[arr.length - 1].value);
+   636→      if (firstVal === null || lastVal === null) continue;
+   637→      if (firstVal === 0) continue;
+   638→      improvements.push(((lastVal - firstVal) / Math.abs(firstVal)) * 100);
+   639→    }
+   640→    if (improvements.length === 0) return 0;
+   641→    // Suppress small groups.
+   642→    if (improvements.length < MIN_GROUP_SIZE) return 0;
+   643→    return round2(improvements.reduce((a, b) => a + b, 0) / improvements.length);
+   644→  }
+   645→
+   646→  private computeMissionCompletionRate(members: AccountId[]): number {
+   647→    const memberSet = new Set(members.map(String));
+   648→    let completed = 0;
+   649→    let terminal = 0;
+   650→    try {
+   651→      const mgr = getMissions() as unknown as {
+   652→        list(): MissionLike[];
+   653→      };
+   654→      const all = mgr.list();
+   655→      for (const m of all) {
+   656→        if (!memberSet.has(m.participantId)) continue;
+   657→        if (
+   658→          m.state === "completed" ||
+   659→          m.state === "skipped" ||
+   660→          m.state === "expired" ||
+   661→          m.state === "cancelled"
+   662→        ) {
+   663→          terminal++;
+   664→        }
+   665→        if (m.state === "completed") completed++;
+   666→      }
+   667→    } catch {
+   668→      // Missions unavailable.
+   669→    }
+   670→    return terminal > 0 ? round4(completed / terminal) : 0;
+   671→  }
+   672→
+   673→  private computeCompetitionEngagement(
+   674→    orgId: PopulationOrgId,
+   675→    memberCount: number,
+   676→  ): number {
+   677→    try {
+   678→      const reg = getCompetitions() as unknown as {
+   679→        list(): CompetitionLike[];
+   680→      };
+   681→      const all = reg.list();
+   682→      let orgActive = 0;
+   683→      let totalParticipants = 0;
+   684→      for (const c of all) {
+   685→        const isOrgCompetition =
+   686→          c.scope === "organizational" ||
+   687→          String(c.scopeFilter?.["orgId"] ?? "") === String(orgId);
+   688→        if (isOrgCompetition && (c.state === "active" || c.state === "registration" || c.state === "qualification")) {
+   689→          orgActive++;
+   690→          totalParticipants += c.currentParticipants ?? 0;
+   691→        }
+   692→      }
+   693→      // Engagement = blend of breadth (how many competitions) and depth
+   694→      // (participants relative to membership).
+   695→      const breadth = Math.min(1, orgActive / 3);
+   696→      const depth = memberCount > 0 ? Math.min(1, totalParticipants / memberCount) : 0;
+   697→      return round4(breadth * 0.6 + depth * 0.4);
+   698→    } catch {
+   699→      return 0;
+   700→    }
+   701→  }
+   702→
+   703→  private computeEngagementScore(
+   704→    missionCompletionRate: number,
+   705→    members: AccountId[],
+   706→    competitionEngagement: number,
+   707→  ): number {
+   708→    // Measurement frequency: measurements per member per week.
+   709→    let measurementFrequencyScore = 0;
+   710→    if (members.length > 0) {
+   711→      const measurements = this.gatherMeasurements(members);
+   712→      const weekAgo = Date.now() - WEEK_MS;
+   713→      let recent = 0;
+   714→      for (const m of measurements) {
+   715→        try {
+   716→          if (new Date(m.provenance.collectedAt).getTime() >= weekAgo) recent++;
+   717→        } catch {
+   718→          // skip
+   719→        }
+   720→      }
+   721→      const perMemberPerWeek = recent / members.length;
+   722→      measurementFrequencyScore = Math.min(1, perMemberPerWeek / 2); // 2/week = full
+   723→    }
+   724→    return Math.round(
+   725→      missionCompletionRate * 40 +
+   726→        measurementFrequencyScore * 30 +
+   727→        competitionEngagement * 30,
+   728→    );
+   729→  }
+   730→
+   731→  // -------------------------------------------------------------------------
+   732→  // Internal: privacy
+   733→  // -------------------------------------------------------------------------
+   734→
+   735→  private getAuthorizedLevel(orgId: PopulationOrgId): "full" | "limited" {
+   736→    try {
+   737→      const grants = getPrivacyFirewall().getOrgGrants(orgId);
+   738→      const hasAggregate = grants.some(
+   739→        (g) =>
+   740→          g.grantType === "aggregate_performance" ||
+   741→          g.grantType === "program_progress",
+   742→      );
+   743→      return hasAggregate ? "full" : "limited";
+   744→    } catch {
+   745→      return "limited";
+   746→    }
+   747→  }
+   748→
+   749→  // -------------------------------------------------------------------------
+   750→  // Internal: snapshot history
+   751→  // -------------------------------------------------------------------------
+   752→
+   753→  private pushSnapshot(orgId: PopulationOrgId, snapshot: DashboardSnapshot): void {
+   754→    const list = this.dashboardHistory.get(orgId) ?? [];
+   755→    list.push(snapshot);
+   756→    // Bound memory.
+   757→    while (list.length > MAX_SNAPSHOTS_PER_ORG) list.shift();
+   758→    this.dashboardHistory.set(orgId, list);
+   759→  }
+   760→
+   761→  // -------------------------------------------------------------------------
+   762→  // Internal: query tracking
+   763→  // -------------------------------------------------------------------------
+   764→
+   765→  private recordQuery(method: string): void {
+   766→    const n = this.queryCounts.get(method) ?? 0;
+   767→    this.queryCounts.set(method, n + 1);
+   768→  }
+   769→}
+   770→
+   771→// ---------------------------------------------------------------------------
+   772→// Helpers
+   773→// ---------------------------------------------------------------------------
+   774→
+   775→function extractNumeric(value: unknown): number | null {
+   776→  if (typeof value === "number") return value;
+   777→  if (typeof value === "string") {
+   778→    const n = parseFloat(value);
+   779→    return isNaN(n) ? null : n;
+   780→  }
+   781→  if (typeof value === "boolean") return null;
+   782→  if (value && typeof value === "object") {
+   783→    const v = value as Record<string, unknown>;
+   784→    if (typeof v["value"] === "number") return v["value"] as number;
+   785→    if (typeof v["systolic"] === "number" && typeof v["diastolic"] === "number") {
+   786→      // Mean arterial pressure proxy.
+   787→      const s = v["systolic"] as number;
+   788→      const d = v["diastolic"] as number;
+   789→      return (s + 2 * d) / 3;
+   790→    }
+   791→  }
+   792→  return null;
+   793→}
+   794→
+   795→function clamp01(n: number): number {
+   796→  if (n < 0) return 0;
+   797→  if (n > 1) return 1;
+   798→  return n;
+   799→}
+   800→
+   801→function round2(n: number): number {
+   802→  return Math.round(n * 100) / 100;
+   803→}
+   804→
+   805→function round4(n: number): number {
+   806→  return Math.round(n * 10000) / 10000;
+   807→}
+   808→
+   809→function periodToMs(period: string): number {
+   810→  const m = period.match(/^(\d+)([dwh])$/);
+   811→  if (!m) {
+   812→    if (period === "30d") return 30 * DAY_MS;
+   813→    if (period === "90d") return 90 * DAY_MS;
+   814→    if (period === "1y") return 365 * DAY_MS;
+   815→    return 30 * DAY_MS;
+   816→  }
+   817→  const n = parseInt(m[1], 10);
+   818→  const unit = m[2];
+   819→  if (unit === "d") return n * DAY_MS;
+   820→  if (unit === "w") return n * WEEK_MS;
+   821→  if (unit === "h") return n * 3600000;
+   822→  return 30 * DAY_MS;
+   823→}
+   824→
+   825→function computeDirection(values: number[]): "up" | "down" | "stable" {
+   826→  if (values.length < 2) return "stable";
+   827→  const first = values[0];
+   828→  const last = values[values.length - 1];
+   829→  if (first === 0) return last > 0 ? "up" : "stable";
+   830→  const pct = ((last - first) / Math.abs(first)) * 100;
+   831→  if (pct > 2) return "up";
+   832→  if (pct < -2) return "down";
+   833→  return "stable";
+   834→}
+   835→
+   836→function snapshotMetric(s: DashboardSnapshot, metric: TrendMetric): number {
+   837→  switch (metric) {
+   838→    case "participationRate":
+   839→      return s.participationRate;
+   840→    case "engagementScore":
+   841→      return s.engagementScore;
+   842→    case "avgImprovement":
+   843→      return s.avgImprovement;
+   844→    case "retention30":
+   845→      return s.retention30;
+   846→    case "retention90":
+   847→      return s.retention90;
+   848→    case "compliance":
+   849→      return s.compliance;
+   850→    case "activeMembers":
+   851→      return s.activeMembers;
+   852→    case "totalMeasurements":
+   853→      return s.totalMeasurements;
+   854→    default:
+   855→      return 0;
+   856→  }
+   857→}
+   858→
+   859→// Re-export for callers that need to construct PopulationOrgId.
+   860→export { asPopulationOrgId, type PopulationOrgId };
+   861→
+   862→// ---------------------------------------------------------------------------
+   863→// Singleton
+   864→// ---------------------------------------------------------------------------
+   865→
+   866→let _analytics: PopulationAnalytics | null = null;
+   867→export function getPopulationAnalytics(): PopulationAnalytics {
+   868→  if (!_analytics) _analytics = new PopulationAnalytics();
+   869→  return _analytics;
+   870→}
+   871→

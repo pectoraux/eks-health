@@ -67,6 +67,7 @@ model EksWaitlistEntry {
   reason          String   @default("")
   referral        String?
   status          String   @default("pending") // pending | approved | rejected
+  accountId       String?
   createdAt       DateTime @default(now())
   approvedAt      DateTime?
 

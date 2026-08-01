@@ -1,10 +1,11 @@
-import { withPlatform, getHealthSources, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getHealthSources, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return withPlatform(() => {
+  return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const sources = getHealthSources();
     return {
       sources: sources.list().map((s) => ({

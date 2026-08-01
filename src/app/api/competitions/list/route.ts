@@ -1,10 +1,11 @@
-import { withPlatform, getCompetitionRegistry, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getCompetitionRegistry, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return withPlatform(() => {
+  return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const comps = getCompetitionRegistry();
     return {
       competitions: comps.list().map((c) => ({

@@ -1,0 +1,1381 @@
+     1→/**
+     2→ * Eks-Health Research Platform — AI Population Intelligence
+     3→ *
+     4→ * AI tools for researchers: trend discovery, hypothesis generation, anomaly
+     5→ * detection, program comparison, risk forecasting, outcome summarization,
+     6→ * evidence synthesis. Every insight is explainable and traceable.
+     7→ *
+     8→ * Because no LLM provider is wired into the platform's research core, every
+     9→ * insight is computed from REAL platform data using REAL statistical methods
+    10→ * (means, standard deviations, z-scores, linear regression slopes, Pearson
+    11→ * correlation, IQR-based outlier detection). Each insight is clearly marked
+    12→ * `methodology: "statistical_analysis"` — never "ai_generated". When a real
+    13→ * AI provider is integrated later, the same inputs and outputs will produce
+    14→ * LLM-augmented summaries; the explainability contract stays identical.
+    15→ *
+    16→ * Real logic:
+    17→ *  - Real trend discovery: pulls population snapshots, examines the
+    18→ *    improvementTrends array, computes trend strength (signed magnitude /
+    19→ *    mean of absolute magnitudes), identifies the most pronounced up/down
+    20→ *    trends. Confidence scaled by population size + number of trend buckets.
+    21→ *  - Real hypothesis generation: scans evidence accumulations, computes
+    22→ *    Pearson correlation between completion rate and average improvement
+    23→ *    across programs; proposes a hypothesis that the correlation reflects a
+    24→ *    causal relationship. Confidence bounded by sample size + |r|.
+    25→ *  - Real anomaly detection: z-score over program effectiveness values; flags
+    26→ *    |z| > 1.5 as candidate anomalies. Evidence records the exact z-scores.
+    27→ *  - Real program comparison: aggregates comparative studies (if present) or
+    28→ *    falls back to evidence accumulations, ranks programs by effectiveness,
+    29→ *    computes pairwise deltas. Confidence from study significance.
+    30→ *  - Real risk forecasting: linear regression over the evidence history
+    31→ *    (participants + improvement over time), extrapolates `horizonDays`
+    32→ *    forward. Confidence from R² of the regression.
+    33→ *  - Real outcome summarization: combines all evidence accumulations into a
+    34→ *    narrative string with real numeric totals (participants, measurements,
+    35→ *    average improvement, completion rate).
+    36→ *  - Real evidence synthesis: combines population snapshots + benchmarks +
+    37→ *    evidence accumulations, produces a structured cross-source synthesis.
+    38→ *
+    39→ * Every insight includes `explainable: true` and `traceable: true`. The full
+    40→ * computation trail (methodology, data points, steps) is retrievable via
+    41→ * getExplainable(id).
+    42→ *
+    43→ * Boundary: insights only ever reference aggregated, anonymized platform
+    44→ * state — never individual participant records.
+    45→ */
+    46→
+    47→import "server-only";
+    48→import type {
+    49→  AccountId,
+    50→  Benchmark,
+    51→  ComparativeStudy,
+    52→  EvidenceAccumulation,
+    53→  InsightId,
+    54→  InsightType,
+    55→  PopulationSnapshot,
+    56→  ProgramId,
+    57→  ResearchInsight,
+    58→} from "../core";
+    59→import {
+    60→  RESEARCH_EVENTS,
+    61→  ResearchError,
+    62→  asInsightId,
+    63→} from "../core";
+    64→import { buildEvent, generateId, getClock, getEventBus } from "@/kernel";
+    65→
+    66→// ---------------------------------------------------------------------------
+    67→// Public types
+    68→// ---------------------------------------------------------------------------
+    69→
+    70→export type InsightMethodology = "statistical_analysis" | "ai_generated";
+    71→
+    72→export interface InsightGenerateInput {
+    73→  readonly type: InsightType;
+    74→  readonly createdBy: AccountId;
+    75→  readonly programId?: ProgramId;
+    76→  readonly programIds?: ProgramId[];
+    77→  readonly metric?: string;
+    78→  readonly categoryFocus?: string;
+    79→  readonly areaOfInterest?: string;
+    80→  readonly horizonDays?: number;
+    81→}
+    82→
+    83→export interface InsightListFilter {
+    84→  readonly type?: InsightType;
+    85→  readonly createdBy?: AccountId;
+    86→  readonly minConfidence?: number;
+    87→  readonly maxConfidence?: number;
+    88→  readonly since?: string;
+    89→  readonly until?: string;
+    90→  readonly limit?: number;
+    91→  readonly offset?: number;
+    92→}
+    93→
+    94→export interface InsightExplanation {
+    95→  readonly insight: ResearchInsight;
+    96→  readonly methodology: InsightMethodology;
+    97→  readonly explanation: string;
+    98→  readonly evidenceTrail: ReadonlyArray<{
+    99→    readonly source: string;
+   100→    readonly detail: string;
+   101→    readonly sourceId?: string;
+   102→    readonly timestamp?: string;
+   103→  }>;
+   104→  readonly computationSteps: string[];
+   105→  readonly dataPoints: number;
+   106→  readonly generatedAt: string;
+   107→}
+   108→
+   109→export interface ProgramRecommendation {
+   110→  readonly programId: ProgramId;
+   111→  readonly generatedAt: string;
+   112→  readonly recommendations: string[];
+   113→  readonly supportingEvidence: { source: string; detail: string }[];
+   114→  readonly confidence: number;
+   115→  readonly methodology: InsightMethodology;
+   116→}
+   117→
+   118→export interface InsightStats {
+   119→  readonly total: number;
+   120→  readonly byType: Record<InsightType, number>;
+   121→  readonly averageConfidence: number;
+   122→  readonly highConfidence: number; // confidence >= 0.7
+   123→  readonly lowConfidence: number; // confidence < 0.4
+   124→}
+   125→
+   126→// ---------------------------------------------------------------------------
+   127→// Mutable internal types
+   128→// ---------------------------------------------------------------------------
+   129→
+   130→interface MutableInsight extends ResearchInsight {
+   131→  id: InsightId;
+   132→  type: InsightType;
+   133→  title: string;
+   134→  summary: string;
+   135→  confidence: number;
+   136→  evidence: { source: string; detail: string }[];
+   137→  recommendations: string[];
+   138→  aiTraceId?: string;
+   139→  explainable: boolean;
+   140→  traceable: boolean;
+   141→  createdBy: AccountId;
+   142→  createdAt: string;
+   143→}
+   144→
+   145→/** A MutableInsight without its id — what each per-type generator returns.
+   146→ *  The id is assigned by generate() after the insight is computed. */
+   147→type InsightDraft = Omit<MutableInsight, "id">;
+   148→
+   149→interface StoredExplanation {
+   150→  readonly insightId: InsightId;
+   151→  readonly methodology: InsightMethodology;
+   152→  readonly explanation: string;
+   153→  readonly evidenceTrail: { source: string; detail: string; sourceId?: string; timestamp?: string }[];
+   154→  readonly computationSteps: string[];
+   155→  readonly dataPoints: number;
+   156→  readonly generatedAt: string;
+   157→}
+   158→
+   159→// ---------------------------------------------------------------------------
+   160→// Sibling-module accessor interfaces (all dynamic-import + try/catch guarded)
+   161→// ---------------------------------------------------------------------------
+   162→
+   163→interface PopulationManager {
+   164→  getLatest?(): PopulationSnapshot | undefined;
+   165→  get?(): PopulationSnapshot | undefined;
+   166→  list?(): PopulationSnapshot[];
+   167→  listAll?(): PopulationSnapshot[];
+   168→}
+   169→
+   170→interface EvidenceManager {
+   171→  get?(programId: ProgramId): EvidenceAccumulation | undefined;
+   172→  getByProgram?(programId: ProgramId): EvidenceAccumulation | undefined;
+   173→  list?(): EvidenceAccumulation[];
+   174→  listAll?(): EvidenceAccumulation[];
+   175→}
+   176→
+   177→interface BenchmarkManager {
+   178→  get?(id: unknown): Benchmark | undefined;
+   179→  list?(): Benchmark[];
+   180→  listAll?(): Benchmark[];
+   181→  byProgram?(programId: ProgramId): Benchmark[];
+   182→  listByProgram?(programId: ProgramId): Benchmark[];
+   183→}
+   184→
+   185→interface ComparativeManager {
+   186→  get?(id: unknown): ComparativeStudy | undefined;
+   187→  list?(): ComparativeStudy[];
+   188→  listAll?(): ComparativeStudy[];
+   189→  byProgram?(programId: ProgramId): ComparativeStudy[];
+   190→}
+   191→
+   192→// ---------------------------------------------------------------------------
+   193→// Statistical helpers (real implementations)
+   194→// ---------------------------------------------------------------------------
+   195→
+   196→function mean(values: number[]): number {
+   197→  if (!values.length) return 0;
+   198→  return values.reduce((a, b) => a + b, 0) / values.length;
+   199→}
+   200→
+   201→function stddev(values: number[]): number {
+   202→  if (values.length < 2) return 0;
+   203→  const m = mean(values);
+   204→  const variance = values.reduce((acc, v) => acc + (v - m) ** 2, 0) / (values.length - 1);
+   205→  return Math.sqrt(variance);
+   206→}
+   207→
+   208→function zscore(value: number, m: number, sd: number): number {
+   209→  if (sd === 0) return 0;
+   210→  return (value - m) / sd;
+   211→}
+   212→
+   213→/** Pearson correlation coefficient. Returns 0 if undefined. */
+   214→function pearson(xs: number[], ys: number[]): number {
+   215→  const n = Math.min(xs.length, ys.length);
+   216→  if (n < 2) return 0;
+   217→  const mx = mean(xs.slice(0, n));
+   218→  const my = mean(ys.slice(0, n));
+   219→  let num = 0;
+   220→  let dx = 0;
+   221→  let dy = 0;
+   222→  for (let i = 0; i < n; i++) {
+   223→    num += (xs[i] - mx) * (ys[i] - my);
+   224→    dx += (xs[i] - mx) ** 2;
+   225→    dy += (ys[i] - my) ** 2;
+   226→  }
+   227→  const denom = Math.sqrt(dx * dy);
+   228→  if (denom === 0) return 0;
+   229→  return num / denom;
+   230→}
+   231→
+   232→/** Simple linear regression (least squares). Returns { slope, intercept, r2 }. */
+   233→function linearRegression(xs: number[], ys: number[]): { slope: number; intercept: number; r2: number } {
+   234→  const n = Math.min(xs.length, ys.length);
+   235→  if (n < 2) return { slope: 0, intercept: ys[0] ?? 0, r2: 0 };
+   236→  const mx = mean(xs.slice(0, n));
+   237→  const my = mean(ys.slice(0, n));
+   238→  let num = 0;
+   239→  let den = 0;
+   240→  for (let i = 0; i < n; i++) {
+   241→    num += (xs[i] - mx) * (ys[i] - my);
+   242→    den += (xs[i] - mx) ** 2;
+   243→  }
+   244→  const slope = den === 0 ? 0 : num / den;
+   245→  const intercept = my - slope * mx;
+   246→  // R²
+   247→  const r = pearson(xs, ys);
+   248→  const r2 = Math.max(0, Math.min(1, r * r));
+   249→  return { slope, intercept, r2 };
+   250→}
+   251→
+   252→function clamp(v: number, lo: number, hi: number): number {
+   253→  return Math.max(lo, Math.min(hi, v));
+   254→}
+   255→
+   256→function round2(v: number): number {
+   257→  return Math.round(v * 100) / 100;
+   258→}
+   259→
+   260→// ---------------------------------------------------------------------------
+   261→// Sibling fetchers
+   262→// ---------------------------------------------------------------------------
+   263→
+   264→async function fetchPopulationSnapshots(): Promise<PopulationSnapshot[]> {
+   265→  const candidates = ["../population", "../snapshots"];
+   266→  for (const path of candidates) {
+   267→    try {
+   268→      const mod = (await import(path)) as {
+   269→        getPopulation?: () => unknown;
+   270→        getPopulationManager?: () => unknown;
+   271→        getSnapshots?: () => unknown;
+   272→      };
+   273→      const accessor = mod?.getPopulation ?? mod?.getPopulationManager ?? mod?.getSnapshots;
+   274→      const mgr = accessor?.() as PopulationManager & { getHistory?: (limit?: number) => PopulationSnapshot[] } | undefined;
+   275→      if (!mgr) continue;
+   276→      if (mgr.list) return mgr.list() ?? [];
+   277→      if (mgr.listAll) return mgr.listAll() ?? [];
+   278→      if (mgr.getHistory) {
+   279→        const history = mgr.getHistory(1000) ?? [];
+   280→        if (history.length) return history;
+   281→      }
+   282→      if (mgr.getLatest) {
+   283→        const latest = mgr.getLatest();
+   284→        return latest ? [latest] : [];
+   285→      }
+   286→      if (mgr.get) {
+   287→        const single = mgr.get();
+   288→        return single ? [single] : [];
+   289→      }
+   290→    } catch {
+   291→      /* try next */
+   292→    }
+   293→  }
+   294→  return [];
+   295→}
+   296→
+   297→async function fetchEvidenceAccumulations(programId?: ProgramId): Promise<EvidenceAccumulation[]> {
+   298→  const candidates = ["../evidence", "../accumulation"];
+   299→  for (const path of candidates) {
+   300→    try {
+   301→      const mod = (await import(path)) as {
+   302→        getEvidence?: () => unknown;
+   303→        getEvidenceEngine?: () => unknown;
+   304→        getEvidenceAccumulation?: () => unknown;
+   305→        getAccumulation?: () => unknown;
+   306→      };
+   307→      const accessor = mod?.getEvidenceEngine ?? mod?.getEvidence ?? mod?.getEvidenceAccumulation ?? mod?.getAccumulation;
+   308→      const mgr = accessor?.() as EvidenceManager | undefined;
+   309→      if (!mgr) continue;
+   310→      if (programId) {
+   311→        const one = mgr.get?.(programId) ?? mgr.getByProgram?.(programId);
+   312→        if (one) return [one];
+   313→      }
+   314→      if (mgr.list) return mgr.list() ?? [];
+   315→      if (mgr.listAll) return mgr.listAll() ?? [];
+   316→      // EvidenceEngine exposes getTopEvidence(limit?) — use it to gather all
+   317→      const top = (mgr as { getTopEvidence?: (limit?: number) => EvidenceAccumulation[] }).getTopEvidence?.(1000);
+   318→      if (top) return top;
+   319→    } catch {
+   320→      /* try next */
+   321→    }
+   322→  }
+   323→  return [];
+   324→}
+   325→
+   326→async function fetchBenchmarks(programId?: ProgramId): Promise<Benchmark[]> {
+   327→  const candidates = ["../benchmarks", "../benchmark"];
+   328→  for (const path of candidates) {
+   329→    try {
+   330→      const mod = (await import(path)) as {
+   331→        getBenchmarks?: () => unknown;
+   332→        getBenchmarkManager?: () => unknown;
+   333→        getBenchmark?: () => unknown;
+   334→      };
+   335→      const accessor = mod?.getBenchmarks ?? mod?.getBenchmarkManager ?? mod?.getBenchmark;
+   336→      const mgr = accessor?.() as BenchmarkManager | undefined;
+   337→      if (!mgr) continue;
+   338→      if (programId) {
+   339→        if (mgr.byProgram) return mgr.byProgram(programId) ?? [];
+   340→        if (mgr.listByProgram) return mgr.listByProgram(programId) ?? [];
+   341→      }
+   342→      if (mgr.list) return mgr.list() ?? [];
+   343→      if (mgr.listAll) return mgr.listAll() ?? [];
+   344→    } catch {
+   345→      /* try next */
+   346→    }
+   347→  }
+   348→  return [];
+   349→}
+   350→
+   351→async function fetchComparativeStudies(programId?: ProgramId): Promise<ComparativeStudy[]> {
+   352→  const candidates = ["../comparative", "../comparisons"];
+   353→  for (const path of candidates) {
+   354→    try {
+   355→      const mod = (await import(path)) as {
+   356→        getComparative?: () => unknown;
+   357→        getComparativeStudies?: () => unknown;
+   358→        getComparisons?: () => unknown;
+   359→      };
+   360→      const accessor = mod?.getComparative ?? mod?.getComparativeStudies ?? mod?.getComparisons;
+   361→      const mgr = accessor?.() as ComparativeManager | undefined;
+   362→      if (!mgr) continue;
+   363→      if (programId) {
+   364→        if (mgr.byProgram) return mgr.byProgram(programId) ?? [];
+   365→      }
+   366→      if (mgr.list) return mgr.list() ?? [];
+   367→      if (mgr.listAll) return mgr.listAll() ?? [];
+   368→    } catch {
+   369→      /* try next */
+   370→    }
+   371→  }
+   372→  return [];
+   373→}
+   374→
+   375→// ---------------------------------------------------------------------------
+   376→// ResearchInsightEngine
+   377→// ---------------------------------------------------------------------------
+   378→
+   379→export class ResearchInsightEngine {
+   380→  private readonly insights = new Map<InsightId, MutableInsight>();
+   381→  private readonly explanations = new Map<InsightId, StoredExplanation>();
+   382→  private readonly byType = new Map<InsightType, InsightId[]>();
+   383→  private readonly byCreator = new Map<AccountId, InsightId[]>();
+   384→  private readonly byProgram = new Map<ProgramId, InsightId[]>();
+   385→
+   386→  /**
+   387→   * Generate a research insight. Dispatches on `type` to a real statistical
+   388→   * computation. If insufficient data is available (no population snapshots,
+   389→   * no evidence, etc.), generates a low-confidence insight with a clear "no
+   390→   * data" summary rather than throwing — researchers can still see the
+   391→   * attempt was made.
+   392→   */
+   393→  async generate(input: InsightGenerateInput): Promise<ResearchInsight> {
+   394→    if (!input.createdBy) {
+   395→      throw new ResearchError({
+   396→        code: "eks.research.insight.validation",
+   397→        category: "validation",
+   398→        message: "createdBy is required.",
+   399→      });
+   400→    }
+   401→    let result: { insight: InsightDraft; explanation: StoredExplanation };
+   402→    switch (input.type) {
+   403→      case "trend_discovery":
+   404→        result = await this.generateTrendDiscovery(input);
+   405→        break;
+   406→      case "hypothesis_generation":
+   407→        result = await this.generateHypothesis(input);
+   408→        break;
+   409→      case "anomaly_detection":
+   410→        result = await this.generateAnomalyDetection(input);
+   411→        break;
+   412→      case "program_comparison":
+   413→        result = await this.generateProgramComparison(input);
+   414→        break;
+   415→      case "risk_forecasting":
+   416→        result = await this.generateRiskForecast(input);
+   417→        break;
+   418→      case "outcome_summarization":
+   419→        result = await this.generateOutcomeSummary(input);
+   420→        break;
+   421→      case "evidence_synthesis":
+   422→        result = await this.generateEvidenceSynthesis(input);
+   423→        break;
+   424→      default:
+   425→        throw new ResearchError({
+   426→          code: "eks.research.insight.validation",
+   427→          category: "validation",
+   428→          message: `Unknown insight type: ${input.type as string}`,
+   429→        });
+   430→    }
+   431→    const id = asInsightId(generateId("rins_"));
+   432→    const insight: MutableInsight = { ...result.insight, id };
+   433→    this.insights.set(id, insight);
+   434→    this.explanations.set(id, { ...result.explanation, insightId: id });
+   435→    this.index(this.byType, insight.type, id);
+   436→    this.index(this.byCreator, insight.createdBy, id);
+   437→    if (input.programId) this.index(this.byProgram, input.programId, id);
+   438→
+   439→    void getEventBus().publish(
+   440→      buildEvent(
+   441→        RESEARCH_EVENTS.populationInsightGenerated,
+   442→        {
+   443→          insightId: id,
+   444→          type: insight.type,
+   445→          confidence: insight.confidence,
+   446→          createdBy: insight.createdBy,
+   447→          methodology: result.explanation.methodology,
+   448→        },
+   449→        {},
+   450→        "domain",
+   451→      ),
+   452→    );
+   453→
+   454→    return this.freeze(insight);
+   455→  }
+   456→
+   457→  /** Get an insight by id. */
+   458→  get(id: InsightId): ResearchInsight {
+   459→    const ins = this.insights.get(id);
+   460→    if (!ins) {
+   461→      throw new ResearchError({
+   462→        code: "eks.research.insight.not_found",
+   463→        category: "not_found",
+   464→        message: `Insight ${id} not found.`,
+   465→        userMessage: "Insight not found.",
+   466→        metadata: { insightId: id },
+   467→      });
+   468→    }
+   469→    return this.freeze(ins);
+   470→  }
+   471→
+   472→  /** List insights by filter. */
+   473→  list(filter: InsightListFilter = {}): ResearchInsight[] {
+   474→    let ids: InsightId[] | undefined;
+   475→    if (filter.type) ids = this.byType.get(filter.type);
+   476→    else if (filter.createdBy) ids = this.byCreator.get(filter.createdBy);
+   477→    else ids = [...this.insights.keys()];
+   478→
+   479→    let items = (ids ?? []).map((id) => this.insights.get(id)!).filter(Boolean);
+   480→    if (filter.type) items = items.filter((i) => i.type === filter.type);
+   481→    if (filter.createdBy) items = items.filter((i) => i.createdBy === filter.createdBy);
+   482→    if (filter.minConfidence !== undefined) items = items.filter((i) => i.confidence >= filter.minConfidence!);
+   483→    if (filter.maxConfidence !== undefined) items = items.filter((i) => i.confidence <= filter.maxConfidence!);
+   484→    if (filter.since) items = items.filter((i) => i.createdAt >= filter.since!);
+   485→    if (filter.until) items = items.filter((i) => i.createdAt <= filter.until!);
+   486→
+   487→    items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+   488→    const offset = filter.offset ?? 0;
+   489→    const limit = filter.limit ?? items.length;
+   490→    return items.slice(offset, offset + limit).map((i) => this.freeze(i));
+   491→  }
+   492→
+   493→  /** Get all insights of a specific type. */
+   494→  getByType(type: InsightType): ResearchInsight[] {
+   495→    return (this.byType.get(type) ?? []).map((id) => this.insights.get(id)!).filter(Boolean).map((i) => this.freeze(i));
+   496→  }
+   497→
+   498→  /** Get all insights associated with a specific program. */
+   499→  getByProgram(programId: ProgramId): ResearchInsight[] {
+   500→    return (this.byProgram.get(programId) ?? []).map((id) => this.insights.get(id)!).filter(Boolean).map((i) => this.freeze(i));
+   501→  }
+   502→
+   503→  /** Get the full explanation + evidence trail for an insight. */
+   504→  getExplainable(id: InsightId): InsightExplanation {
+   505→    const ins = this.insights.get(id);
+   506→    if (!ins) {
+   507→      throw new ResearchError({
+   508→        code: "eks.research.insight.not_found",
+   509→        category: "not_found",
+   510→        message: `Insight ${id} not found.`,
+   511→        userMessage: "Insight not found.",
+   512→        metadata: { insightId: id },
+   513→      });
+   514→    }
+   515→    const exp = this.explanations.get(id);
+   516→    return {
+   517→      insight: this.freeze(ins),
+   518→      methodology: exp?.methodology ?? "statistical_analysis",
+   519→      explanation: exp?.explanation ?? "No detailed explanation recorded.",
+   520→      evidenceTrail: exp?.evidenceTrail ?? ins.evidence.map((e) => ({ source: e.source, detail: e.detail })),
+   521→      computationSteps: exp?.computationSteps ?? [],
+   522→      dataPoints: exp?.dataPoints ?? ins.evidence.length,
+   523→      generatedAt: exp?.generatedAt ?? ins.createdAt,
+   524→    };
+   525→  }
+   526→
+   527→  /**
+   528→   * Get AI-generated improvement recommendations for a program based on its
+   529→   * evidence + benchmarks. Real computation: identifies weak metrics (below
+   530→   * benchmark or below population mean) and proposes targeted actions.
+   531→   */
+   532→  async getRecommendations(programId: ProgramId): Promise<ProgramRecommendation> {
+   533→    if (!programId) {
+   534→      throw new ResearchError({
+   535→        code: "eks.research.insight.validation",
+   536→        category: "validation",
+   537→        message: "programId is required.",
+   538→      });
+   539→    }
+   540→    const [evidenceList, benchmarks] = await Promise.all([
+   541→      fetchEvidenceAccumulations(programId),
+   542→      fetchBenchmarks(programId),
+   543→    ]);
+   544→    const evidence = evidenceList[0];
+   545→    const recs: string[] = [];
+   546→    const supporting: { source: string; detail: string }[] = [];
+   547→    let confidence = 0.3;
+   548→
+   549→    if (evidence) {
+   550→      if (evidence.completionRate < 0.5) {
+   551→        recs.push(`Improve program completion — currently ${Math.round(evidence.completionRate * 100)}%, below the 50% healthy threshold. Consider shorter missions or more frequent nudges.`);
+   552→        supporting.push({ source: "evidence_accumulation", detail: `completionRate=${evidence.completionRate}` });
+   553→      }
+   554→      if (evidence.retentionRate < 0.4) {
+   555→        recs.push(`Strengthen long-term retention — currently ${Math.round(evidence.retentionRate * 100)}%. Introduce milestone rewards at week 4 and week 12.`);
+   556→        supporting.push({ source: "evidence_accumulation", detail: `retentionRate=${evidence.retentionRate}` });
+   557→      }
+   558→      if (evidence.measurementQuality < 0.7) {
+   559→        recs.push(`Measurement quality is ${Math.round(evidence.measurementQuality * 100)}%. Add technician verification touchpoints for the lowest-quality measurement categories.`);
+   560→        supporting.push({ source: "evidence_accumulation", detail: `measurementQuality=${evidence.measurementQuality}` });
+   561→      }
+   562→      if (evidence.averageImprovement < 5) {
+   563→        recs.push(`Average improvement is only ${round2(evidence.averageImprovement)}%. Re-evaluate the program's core intervention intensity.`);
+   564→        supporting.push({ source: "evidence_accumulation", detail: `averageImprovement=${evidence.averageImprovement}` });
+   565→      }
+   566→      if (evidence.confidenceScore > 0 && evidence.confidenceScore < 50) {
+   567→        recs.push(`Evidence confidence is low (${Math.round(evidence.confidenceScore)}/100). Collect more measurements before scaling.`);
+   568→        supporting.push({ source: "evidence_accumulation", detail: `confidenceScore=${evidence.confidenceScore}` });
+   569→      }
+   570→      confidence = clamp(0.4 + evidence.confidenceScore / 200, 0, 0.95);
+   571→    } else {
+   572→      recs.push("No evidence accumulation found for this program. Begin by enrolling participants and collecting verified measurements.");
+   573→      supporting.push({ source: "evidence_accumulation", detail: "no record" });
+   574→    }
+   575→
+   576→    if (benchmarks.length) {
+   577→      const relevant = benchmarks.filter((b) => b.metric === "average_improvement" || b.metric === "completion_rate");
+   578→      for (const b of relevant) {
+   579→        if (evidence) {
+   580→          if (b.metric === "average_improvement" && evidence.averageImprovement < b.value) {
+   581→            recs.push(`Average improvement ${round2(evidence.averageImprovement)}% is below the ${b.type} benchmark of ${round2(b.value)}%. Investigate the gap.`);
+   582→            supporting.push({ source: "benchmark", detail: `${b.metric} ${b.type}=${b.value}` });
+   583→          }
+   584→          if (b.metric === "completion_rate" && evidence.completionRate * 100 < b.value) {
+   585→            recs.push(`Completion ${Math.round(evidence.completionRate * 100)}% is below the ${b.type} benchmark of ${round2(b.value)}%.`);
+   586→            supporting.push({ source: "benchmark", detail: `${b.metric} ${b.type}=${b.value}` });
+   587→          }
+   588→        }
+   589→      }
+   590→      confidence = clamp(confidence + 0.1, 0, 0.95);
+   591→    }
+   592→
+   593→    if (recs.length === 0) {
+   594→      recs.push("Program is performing above thresholds and benchmarks. Continue current operations and monitor for drift.");
+   595→      confidence = clamp(confidence + 0.1, 0, 0.95);
+   596→    }
+   597→
+   598→    return {
+   599→      programId,
+   600→      generatedAt: getClock().iso(),
+   601→      recommendations: recs,
+   602→      supportingEvidence: supporting,
+   603→      confidence: round2(confidence),
+   604→      methodology: "statistical_analysis",
+   605→    };
+   606→  }
+   607→
+   608→  /** Aggregate stats across all insights. */
+   609→  getStats(): InsightStats {
+   610→    const list = [...this.insights.values()];
+   611→    const byType = {} as Record<InsightType, number>;
+   612→    const allTypes: InsightType[] = [
+   613→      "trend_discovery", "hypothesis_generation", "anomaly_detection",
+   614→      "program_comparison", "risk_forecasting", "outcome_summarization", "evidence_synthesis",
+   615→    ];
+   616→    for (const t of allTypes) byType[t] = 0;
+   617→    let totalConf = 0;
+   618→    let high = 0;
+   619→    let low = 0;
+   620→    for (const i of list) {
+   621→      byType[i.type] = (byType[i.type] ?? 0) + 1;
+   622→      totalConf += i.confidence;
+   623→      if (i.confidence >= 0.7) high++;
+   624→      if (i.confidence < 0.4) low++;
+   625→    }
+   626→    return {
+   627→      total: list.length,
+   628→      byType,
+   629→      averageConfidence: list.length ? round2(totalConf / list.length) : 0,
+   630→      highConfidence: high,
+   631→      lowConfidence: low,
+   632→    };
+   633→  }
+   634→
+   635→  // -----------------------------------------------------------------------
+   636→  // Per-type generators (all real statistical computations)
+   637→  // -----------------------------------------------------------------------
+   638→
+   639→  private async generateTrendDiscovery(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+   640→    const snapshots = await fetchPopulationSnapshots();
+   641→    const now = getClock().iso();
+   642→    const steps: string[] = [];
+   643→    steps.push(`Fetched ${snapshots.length} population snapshot(s) from sibling module.`);
+   644→
+   645→    if (!snapshots.length) {
+   646→      return this.buildNoDataInsight(input, "trend_discovery", "No population snapshots available for trend discovery.", now, steps);
+   647→    }
+   648→
+   649→    // Aggregate improvementTrends across snapshots, scoped by categoryFocus if provided
+   650→    const trendBuckets = new Map<string, { category: string; avgImprovement: number; trend: "up" | "down" | "stable" }[]>();
+   651→    for (const snap of snapshots) {
+   652→      for (const t of snap.improvementTrends ?? []) {
+   653→        if (input.categoryFocus && t.category.toLowerCase() !== input.categoryFocus.toLowerCase()) continue;
+   654→        const list = trendBuckets.get(t.category) ?? [];
+   655→        list.push(t);
+   656→        trendBuckets.set(t.category, list);
+   657→      }
+   658→    }
+   659→
+   660→    if (!trendBuckets.size) {
+   661→      return this.buildNoDataInsight(input, "trend_discovery", "No improvement trends recorded in available snapshots.", now, steps);
+   662→    }
+   663→
+   664→    steps.push(`Aggregated trends across ${trendBuckets.size} categories.`);
+   665→
+   666→    // Score each category by average magnitude
+   667→    const scored = [...trendBuckets.entries()].map(([category, list]) => {
+   668→      const mags = list.map((t) => Math.abs(t.avgImprovement));
+   669→      const avgMag = mean(mags);
+   670→      const lastTrend = list[list.length - 1].trend;
+   671→      return { category, avgMag: round2(avgMag), trend: lastTrend, sampleCount: list.length };
+   672→    });
+   673→    scored.sort((a, b) => b.avgMag - a.avgMag);
+   674→
+   675→    const top = scored[0];
+   676→    const worst = scored[scored.length - 1];
+   677→    steps.push(`Ranked ${scored.length} categories by average magnitude of improvement.`);
+   678→
+   679→    const allMags = scored.map((s) => s.avgMag);
+   680→    const overallMean = mean(allMags);
+   681→    const overallSd = stddev(allMags);
+   682→    const topZ = zscore(top.avgMag, overallMean, overallSd);
+   683→    steps.push(`Top category "${top.category}" has z-score ${round2(topZ)} vs the category mean.`);
+   684→
+   685→    // Confidence: scaled by number of categories + how strongly the top trend stands out
+   686→    const confidence = clamp(0.4 + (top.avgMag / 100) * 0.4 + clamp(Math.abs(topZ) / 4, 0, 0.2), 0, 0.95);
+   687→
+   688→    const title = input.categoryFocus
+   689→      ? `Trend discovery: ${top.category} shows the strongest ${top.trend} trend`
+   690→      : `Trend discovery: ${top.category} trending ${top.trend} (strongest of ${scored.length} categories)`;
+   691→
+   692→    const summary = `Across ${snapshots.length} population snapshot(s), the "${top.category}" category shows the strongest improvement trend (avg magnitude ${top.avgMag}%, trend=${top.trend}). The weakest category is "${worst.category}" (${worst.avgMag}%). Overall mean improvement across categories is ${round2(overallMean)}% (σ=${round2(overallSd)}).`;
+   693→
+   694→    const evidence = [
+   695→      { source: "population_snapshot", detail: `${snapshots.length} snapshots analyzed, ${scored.length} categories aggregated` },
+   696→      { source: "trend_aggregation", detail: `Top: ${top.category}=${top.avgMag}% (${top.trend}); Bottom: ${worst.category}=${worst.avgMag}%` },
+   697→      { source: "statistical_summary", detail: `mean=${round2(overallMean)}, σ=${round2(overallSd)}, top z-score=${round2(topZ)}` },
+   698→    ];
+   699→
+   700→    const recommendations = [
+   701→      `Prioritize research attention on "${top.category}" — it shows the strongest population-level signal.`,
+   702→      `Investigate why "${worst.category}" lags; it may benefit from program redesign.`,
+   703→      `Use the ${round2(overallMean)}% mean as a benchmark when evaluating individual programs.`,
+   704→    ];
+   705→
+   706→    return {
+   707→      insight: {
+   708→        type: "trend_discovery",
+   709→        title,
+   710→        summary,
+   711→        confidence: round2(confidence),
+   712→        evidence,
+   713→        recommendations,
+   714→        aiTraceId: undefined,
+   715→        explainable: true,
+   716→        traceable: true,
+   717→        createdBy: input.createdBy,
+   718→        createdAt: now,
+   719→      },
+   720→      explanation: {
+   721→        insightId: "" as InsightId, // filled by caller
+   722→        methodology: "statistical_analysis",
+   723→        explanation: `This insight was produced by aggregating the improvementTrends field across ${snapshots.length} population snapshot(s), grouping by category, computing the mean absolute magnitude per category, then ranking categories. The top category's z-score (relative to the cross-category mean and standard deviation) quantifies how strongly it stands out. No LLM was used; all numbers are computed from platform state.`,
+   724→        evidenceTrail: [
+   725→          { source: "population_snapshot", detail: `${snapshots.length} snapshots`, timestamp: snapshots[snapshots.length - 1]?.capturedAt },
+   726→          { source: "trend_aggregation", detail: `aggregated ${trendBuckets.size} categories`, timestamp: now },
+   727→          { source: "ranking", detail: `top=${top.category}@${top.avgMag}%, bottom=${worst.category}@${worst.avgMag}%`, timestamp: now },
+   728→        ],
+   729→        computationSteps: steps,
+   730→        dataPoints: scored.length,
+   731→        generatedAt: now,
+   732→      },
+   733→    };
+   734→  }
+   735→
+   736→  private async generateHypothesis(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+   737→    const evidenceList = await fetchEvidenceAccumulations(input.programId);
+   738→    const now = getClock().iso();
+   739→    const steps: string[] = [];
+   740→    steps.push(`Fetched ${evidenceList.length} evidence accumulation(s).`);
+   741→
+   742→    if (evidenceList.length < 3) {
+   743→      return this.buildNoDataInsight(input, "hypothesis_generation", `Only ${evidenceList.length} evidence accumulation(s) available — need at least 3 to compute a correlation.`, now, steps);
+   744→    }
+   745→
+   746→    const xs = evidenceList.map((e) => e.completionRate);
+   747→    const ys = evidenceList.map((e) => e.averageImprovement);
+   748→    const r = pearson(xs, ys);
+   749→    steps.push(`Computed Pearson r(completion → improvement) = ${round2(r)} over ${xs.length} programs.`);
+   750→
+   751→    const direction = r > 0 ? "positive" : "inverse";
+   752→    const strength = Math.abs(r) > 0.7 ? "strong" : Math.abs(r) > 0.4 ? "moderate" : "weak";
+   753→    const confidence = clamp(0.3 + Math.abs(r) * 0.5 + Math.min(0.15, xs.length / 100), 0, 0.95);
+   754→
+   755→    const title = `Hypothesis: ${direction} ${strength} relationship between program completion rate and average improvement (r=${round2(r)})`;
+   756→
+   757→    const summary = `Across ${xs.length} programs with accumulated evidence, the Pearson correlation between completion rate and average improvement is r=${round2(r)} (${direction}, ${strength}). This ${Math.abs(r) > 0.4 ? "supports" : "does not strongly support"} the hypothesis that higher program completion drives greater health improvement, though correlation does not imply causation.`;
+   758→
+   759→    const evidence = [
+   760→      { source: "evidence_accumulation", detail: `${xs.length} programs analyzed` },
+   761→      { source: "pearson_correlation", detail: `r = ${round2(r)} (completion × improvement)` },
+   762→      { source: "correlation_strength", detail: `|r|=${round2(Math.abs(r))} → ${strength} ${direction}` },
+   763→    ];
+   764→
+   765→    const recommendations = [
+   766→      `Design a controlled study to test whether ${direction === "positive" ? "increasing" : "decreasing"} completion ${direction === "positive" ? "causes" : "is associated with"} greater improvement.`,
+   767→      `Control for confounders: participant motivation, baseline severity, and program intensity all correlate with both variables.`,
+   768→      `Replicate with a randomized trial before claiming causation.`,
+   769→    ];
+   770→
+   771→    return {
+   772→      insight: {
+   773→        type: "hypothesis_generation",
+   774→        title,
+   775→        summary,
+   776→        confidence: round2(confidence),
+   777→        evidence,
+   778→        recommendations,
+   779→        aiTraceId: undefined,
+   780→        explainable: true,
+   781→        traceable: true,
+   782→        createdBy: input.createdBy,
+   783→        createdAt: now,
+   784→      },
+   785→      explanation: {
+   786→        insightId: "" as InsightId,
+   787→        methodology: "statistical_analysis",
+   788→        explanation: `Computed Pearson correlation between completionRate (x) and averageImprovement (y) across ${xs.length} evidence accumulations. The correlation coefficient r measures linear association; |r|>0.7 is strong, 0.4-0.7 is moderate, <0.4 is weak. Causation requires a controlled experiment.`,
+   789→        evidenceTrail: evidenceList.slice(0, 5).map((e) => ({
+   790→          source: "evidence_accumulation",
+   791→          detail: `programId=${e.programId}, completion=${round2(e.completionRate)}, improvement=${round2(e.averageImprovement)}`,
+   792→          timestamp: e.lastUpdated,
+   793→        })),
+   794→        computationSteps: steps,
+   795→        dataPoints: xs.length,
+   796→        generatedAt: now,
+   797→      },
+   798→    };
+   799→  }
+   800→
+   801→  private async generateAnomalyDetection(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+   802→    const snapshots = await fetchPopulationSnapshots();
+   803→    const now = getClock().iso();
+   804→    const steps: string[] = [];
+   805→
+   806→    if (!snapshots.length) {
+   807→      return this.buildNoDataInsight(input, "anomaly_detection", "No population snapshots available for anomaly detection.", now, steps);
+   808→    }
+   809→
+   810→    const snapshot = snapshots[snapshots.length - 1];
+   811→    const effectiveness = snapshot.programEffectiveness ?? [];
+   812→    steps.push(`Using latest snapshot with ${effectiveness.length} program effectiveness values.`);
+   813→
+   814→    if (effectiveness.length < 3) {
+   815→      return this.buildNoDataInsight(input, "anomaly_detection", `Only ${effectiveness.length} program effectiveness values — need at least 3 for outlier detection.`, now, steps);
+   816→    }
+   817→
+   818→    const values = effectiveness.map((e) => e.effectiveness);
+   819→    const m = mean(values);
+   820→    const sd = stddev(values);
+   821→    const anomalies = effectiveness
+   822→      .map((e) => ({ ...e, z: zscore(e.effectiveness, m, sd) }))
+   823→      .filter((e) => Math.abs(e.z) > 1.5)
+   824→      .sort((a, b) => Math.abs(b.z) - Math.abs(a.z));
+   825→    steps.push(`Mean effectiveness=${round2(m)}, σ=${round2(sd)}. Found ${anomalies.length} anomalies with |z|>1.5.`);
+   826→
+   827→    if (!anomalies.length) {
+   828→      const confidence = 0.4;
+   829→      return {
+   830→        insight: {
+   831→          type: "anomaly_detection",
+   832→          title: "Anomaly detection: no program-effectiveness outliers detected",
+   833→          summary: `Across ${effectiveness.length} programs, no effectiveness values fall more than 1.5σ from the mean (μ=${round2(m)}, σ=${round2(sd)}). Population appears statistically homogeneous.`,
+   834→          confidence: round2(confidence),
+   835→          evidence: [
+   836→            { source: "population_snapshot", detail: `${effectiveness.length} programs` },
+   837→            { source: "zscore_analysis", detail: `μ=${round2(m)}, σ=${round2(sd)}, max |z|=${round2(Math.max(...effectiveness.map((e) => Math.abs(zscore(e.effectiveness, m, sd)))))}` },
+   838→          ],
+   839→          recommendations: [
+   840→            "Continue monitoring — absence of outliers is itself a useful signal.",
+   841→            "Tighten the threshold to 1.0σ if early-warning detection is desired.",
+   842→          ],
+   843→          aiTraceId: undefined,
+   844→          explainable: true,
+   845→          traceable: true,
+   846→          createdBy: input.createdBy,
+   847→          createdAt: now,
+   848→        },
+   849→        explanation: {
+   850→          insightId: "" as InsightId,
+   851→          methodology: "statistical_analysis",
+   852→          explanation: `Computed mean and standard deviation of program effectiveness values from the latest population snapshot. Applied z-score outlier detection with threshold |z|>1.5. No values exceeded the threshold.`,
+   853→          evidenceTrail: effectiveness.slice(0, 5).map((e) => ({
+   854→            source: "program_effectiveness",
+   855→            detail: `programId=${e.programId}, effectiveness=${round2(e.effectiveness)}, z=${round2(zscore(e.effectiveness, m, sd))}`,
+   856→            timestamp: snapshot.capturedAt,
+   857→          })),
+   858→          computationSteps: steps,
+   859→          dataPoints: effectiveness.length,
+   860→          generatedAt: now,
+   861→        },
+   862→      };
+   863→    }
+   864→
+   865→    const top = anomalies[0];
+   866→    const confidence = clamp(0.5 + Math.min(0.4, Math.abs(top.z) / 4), 0, 0.95);
+   867→    const title = `Anomaly detection: ${anomalies.length} program(s) show outlying effectiveness (top |z|=${round2(Math.abs(top.z))})`;
+   868→    const summary = `Across ${effectiveness.length} programs (μ=${round2(m)}, σ=${round2(sd)}), ${anomalies.length} program(s) have effectiveness values more than 1.5σ from the mean. The most extreme is program ${top.programId} (effectiveness=${round2(top.effectiveness)}, z=${round2(top.z)}).`;
+   869→
+   870→    const evidence = [
+   871→      { source: "population_snapshot", detail: `${effectiveness.length} programs analyzed` },
+   872→      { source: "zscore_analysis", detail: `μ=${round2(m)}, σ=${round2(sd)}, threshold=1.5σ` },
+   873→      { source: "anomaly", detail: `top: ${top.programId} z=${round2(top.z)} (effectiveness ${round2(top.effectiveness)})` },
+   874→    ];
+   875→
+   876→    const recommendations = [
+   877→      `Investigate program ${top.programId}: its ${top.z > 0 ? "exceptionally high" : "exceptionally low"} effectiveness may indicate either a breakthrough or a data quality issue.`,
+   878→      `Cross-check with evidence accumulations for the flagged programs to verify sample sizes.`,
+   879→      `If the outlier is real, study its methodology for transferable practices.`,
+   880→    ];
+   881→
+   882→    return {
+   883→      insight: {
+   884→        type: "anomaly_detection",
+   885→        title,
+   886→        summary,
+   887→        confidence: round2(confidence),
+   888→        evidence,
+   889→        recommendations,
+   890→        aiTraceId: undefined,
+   891→        explainable: true,
+   892→        traceable: true,
+   893→        createdBy: input.createdBy,
+   894→        createdAt: now,
+   895→      },
+   896→      explanation: {
+   897→        insightId: "" as InsightId,
+   898→        methodology: "statistical_analysis",
+   899→        explanation: `Computed mean (μ) and standard deviation (σ) of program effectiveness values from the latest population snapshot. For each program, computed z=(effectiveness-μ)/σ. Flagged |z|>1.5 as candidate anomalies. Z-scores quantify how many standard deviations a value is from the mean.`,
+   900→        evidenceTrail: anomalies.slice(0, 5).map((a) => ({
+   901→          source: "program_effectiveness",
+   902→          detail: `programId=${a.programId}, effectiveness=${round2(a.effectiveness)}, z=${round2(a.z)}`,
+   903→          timestamp: snapshot.capturedAt,
+   904→        })),
+   905→        computationSteps: steps,
+   906→        dataPoints: effectiveness.length,
+   907→        generatedAt: now,
+   908→      },
+   909→    };
+   910→  }
+   911→
+   912→  private async generateProgramComparison(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+   913→    const comparative = await fetchComparativeStudies();
+   914→    const now = getClock().iso();
+   915→    const steps: string[] = [];
+   916→    steps.push(`Fetched ${comparative.length} comparative study/studies.`);
+   917→
+   918→    let relevant = comparative;
+   919→    if (input.programIds && input.programIds.length) {
+   920→      relevant = comparative.filter((c) => c.programIds.some((p) => input.programIds!.includes(p)));
+   921→      steps.push(`Filtered to ${relevant.length} studies touching the requested programs.`);
+   922→    }
+   923→
+   924→    if (!relevant.length) {
+   925→      // Fall back to evidence accumulations
+   926→      const evidence = await fetchEvidenceAccumulations();
+   927→      if (evidence.length < 2) {
+   928→        return this.buildNoDataInsight(input, "program_comparison", "No comparative studies and fewer than 2 evidence accumulations available for comparison.", now, steps);
+   929→      }
+   930→      const ranked = [...evidence].sort((a, b) => b.averageImprovement - a.averageImprovement);
+   931→      const top = ranked[0];
+   932→      const bottom = ranked[ranked.length - 1];
+   933→      const delta = round2(top.averageImprovement - bottom.averageImprovement);
+   934→      const confidence = clamp(0.3 + Math.min(0.4, ranked.length / 25), 0, 0.85);
+   935→      const title = `Program comparison: ${top.programId} leads with ${round2(top.averageImprovement)}% avg improvement (Δ=${delta}% vs bottom)`;
+   936→      const summary = `No comparative studies available; fell back to evidence accumulations across ${ranked.length} programs. Top: ${top.programId} (${round2(top.averageImprovement)}%). Bottom: ${bottom.programId} (${round2(bottom.averageImprovement)}%). Delta: ${delta}%.`;
+   937→      return {
+   938→        insight: {
+   939→          type: "program_comparison",
+   940→          title,
+   941→          summary,
+   942→          confidence: round2(confidence),
+   943→          evidence: [
+   944→            { source: "evidence_accumulation", detail: `${ranked.length} programs compared (comparative studies unavailable)` },
+   945→            { source: "ranking", detail: `top=${top.programId}@${round2(top.averageImprovement)}%, bottom=${bottom.programId}@${round2(bottom.averageImprovement)}%` },
+   946→          ],
+   947→          recommendations: [
+   948→            `Use ${top.programId}'s methodology as a reference standard.`,
+   949→            `Investigate the ${delta}% gap — could be program design, population, or measurement fidelity.`,
+   950→          ],
+   951→          aiTraceId: undefined,
+   952→          explainable: true,
+   953→          traceable: true,
+   954→          createdBy: input.createdBy,
+   955→          createdAt: now,
+   956→        },
+   957→        explanation: {
+   958→          insightId: "" as InsightId,
+   959→          methodology: "statistical_analysis",
+   960→          explanation: `No comparative studies found; fell back to ranking evidence accumulations by averageImprovement. Top and bottom programs compared with absolute delta.`,
+   961→          evidenceTrail: ranked.slice(0, 5).map((e) => ({
+   962→            source: "evidence_accumulation",
+   963→            detail: `programId=${e.programId}, improvement=${round2(e.averageImprovement)}`,
+   964→            timestamp: e.lastUpdated,
+   965→          })),
+   966→          computationSteps: steps,
+   967→          dataPoints: ranked.length,
+   968→          generatedAt: now,
+   969→        },
+   970→      };
+   971→    }
+   972→
+   973→    // Aggregate comparative study results
+   974→    const allResults: { programId: ProgramId; value: number; confidence: number; sampleSize: number; studyId: string }[] = [];
+   975→    for (const study of relevant) {
+   976→      for (const r of study.results) {
+   977→        allResults.push({ programId: r.programId, value: r.value, confidence: r.confidence, sampleSize: r.sampleSize, studyId: study.id });
+   978→      }
+   979→    }
+   980→    if (!allResults.length) {
+   981→      return this.buildNoDataInsight(input, "program_comparison", "Comparative studies exist but contain no per-program results.", now, steps);
+   982→    }
+   983→    const byProgram = new Map<ProgramId, { values: number[]; confidences: number[]; sampleSizes: number[] }>();
+   984→    for (const r of allResults) {
+   985→      const agg = byProgram.get(r.programId) ?? { values: [], confidences: [], sampleSizes: [] };
+   986→      agg.values.push(r.value);
+   987→      agg.confidences.push(r.confidence);
+   988→      agg.sampleSizes.push(r.sampleSize);
+   989→      byProgram.set(r.programId, agg);
+   990→    }
+   991→    const ranked = [...byProgram.entries()].map(([programId, agg]) => ({
+   992→      programId,
+   993→      meanValue: round2(mean(agg.values)),
+   994→      meanConfidence: round2(mean(agg.confidences)),
+   995→      totalSample: agg.sampleSizes.reduce((a, b) => a + b, 0),
+   996→    }));
+   997→    ranked.sort((a, b) => b.meanValue - a.meanValue);
+   998→    steps.push(`Aggregated ${allResults.length} per-program results across ${relevant.length} studies into ${ranked.length} ranked programs.`);
+   999→
+  1000→    const top = ranked[0];
+  1001→    const bottom = ranked[ranked.length - 1];
+  1002→    const delta = round2(top.meanValue - bottom.meanValue);
+  1003→    const bestSig = Math.min(...relevant.map((s) => s.significance));
+  1004→    const confidence = clamp(0.5 + (1 - bestSig) * 0.3 + Math.min(0.15, relevant.length / 10), 0, 0.95);
+  1005→
+  1006→    const title = `Program comparison: ${top.programId} ranks #1 of ${ranked.length} (Δ=${delta} vs #${ranked.length})`;
+  1007→    const summary = `Across ${relevant.length} comparative study/studies (${allResults.length} per-program results), ${top.programId} leads with mean outcome ${top.meanValue} (${top.totalSample} participants, confidence ${top.meanConfidence}). Last place: ${bottom.programId} (${bottom.meanValue}). Delta: ${delta}. Best study p-value: ${bestSig}.`;
+  1008→
+  1009→    const evidence = [
+  1010→      { source: "comparative_studies", detail: `${relevant.length} studies, ${allResults.length} results` },
+  1011→      { source: "ranking", detail: `#1=${top.programId}@${top.meanValue}, #${ranked.length}=${bottom.programId}@${bottom.meanValue}, Δ=${delta}` },
+  1012→      { source: "significance", detail: `best p-value=${bestSig}` },
+  1013→    ];
+  1014→
+  1015→    const recommendations = [
+  1016→      `Prioritize ${top.programId} for scale-up consideration.`,
+  1017→      `Investigate why ${bottom.programId} underperforms — methodology, population, or fidelity?`,
+  1018→      `Replicate the top-ranked program in new populations to validate generalizability.`,
+  1019→    ];
+  1020→
+  1021→    return {
+  1022→      insight: {
+  1023→        type: "program_comparison",
+  1024→        title,
+  1025→        summary,
+  1026→        confidence: round2(confidence),
+  1027→        evidence,
+  1028→        recommendations,
+  1029→        aiTraceId: undefined,
+  1030→        explainable: true,
+  1031→        traceable: true,
+  1032→        createdBy: input.createdBy,
+  1033→        createdAt: now,
+  1034→      },
+  1035→      explanation: {
+  1036→        insightId: "" as InsightId,
+  1037→        methodology: "statistical_analysis",
+  1038→        explanation: `Aggregated per-program results from ${relevant.length} comparative studies. For each program, computed the mean outcome value across all studies it appeared in. Ranked programs by mean outcome. Reported the top-to-bottom delta and the best (lowest) study p-value as a significance indicator.`,
+  1039→        evidenceTrail: ranked.slice(0, 5).map((r) => ({
+  1040→          source: "comparative_study_result",
+  1041→          detail: `programId=${r.programId}, mean=${r.meanValue}, sample=${r.totalSample}, confidence=${r.meanConfidence}`,
+  1042→          timestamp: now,
+  1043→        })),
+  1044→        computationSteps: steps,
+  1045→        dataPoints: allResults.length,
+  1046→        generatedAt: now,
+  1047→      },
+  1048→    };
+  1049→  }
+  1050→
+  1051→  private async generateRiskForecast(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+  1052→    const horizonDays = input.horizonDays ?? 90;
+  1053→    const evidenceList = await fetchEvidenceAccumulations(input.programId);
+  1054→    const now = getClock().iso();
+  1055→    const steps: string[] = [];
+  1056→
+  1057→    if (!evidenceList.length) {
+  1058→      return this.buildNoDataInsight(input, "risk_forecasting", "No evidence accumulations available for forecasting.", now, steps);
+  1059→    }
+  1060→
+  1061→    // Collect the history series (participants, improvement over time)
+  1062→    const series: { ts: number; participants: number; improvement: number; confidence: number }[] = [];
+  1063→    for (const e of evidenceList) {
+  1064→      for (const h of e.history ?? []) {
+  1065→        series.push({ ts: new Date(h.at).getTime(), participants: h.participants, improvement: h.improvement, confidence: h.confidence });
+  1066→      }
+  1067→    }
+  1068→    series.sort((a, b) => a.ts - b.ts);
+  1069→
+  1070→    if (series.length < 3) {
+  1071→      return this.buildNoDataInsight(input, "risk_forecasting", `Only ${series.length} history data points — need at least 3 to fit a regression.`, now, steps);
+  1072→    }
+  1073→
+  1074→    // Normalize time to days from the first sample
+  1075→    const t0 = series[0].ts;
+  1076→    const xs = series.map((s) => (s.ts - t0) / 86400000);
+  1077→    const ysImp = series.map((s) => s.improvement);
+  1078→    const ysPart = series.map((s) => s.participants);
+  1079→
+  1080→    const regImp = linearRegression(xs, ysImp);
+  1081→    const regPart = linearRegression(xs, ysPart);
+  1082→    steps.push(`Fitted linear regression on improvement: slope=${round2(regImp.slope)}/day, R²=${round2(regImp.r2)}.`);
+  1083→    steps.push(`Fitted linear regression on participants: slope=${round2(regPart.slope)}/day, R²=${round2(regPart.r2)}.`);
+  1084→
+  1085→    const lastDay = xs[xs.length - 1];
+  1086→    const forecastDay = lastDay + horizonDays;
+  1087→    const projectedImprovement = round2(regImp.slope * forecastDay + regImp.intercept);
+  1088→    const projectedParticipants = Math.max(0, Math.round(regPart.slope * forecastDay + regPart.intercept));
+  1089→
+  1090→    // Confidence: weighted by both R² values, capped
+  1091→    const confidence = clamp(0.3 + (regImp.r2 + regPart.r2) / 2 * 0.5, 0, 0.85);
+  1092→    steps.push(`Extrapolated ${horizonDays} days forward: projected improvement=${projectedImprovement}%, projected participants=${projectedParticipants}.`);
+  1093→
+  1094→    // Risk indicators
+  1095→    const risks: string[] = [];
+  1096→    if (regImp.slope < 0) risks.push(`Improvement is declining at ${round2(Math.abs(regImp.slope))}%/day — projected to reach ${projectedImprovement}% in ${horizonDays} days.`);
+  1097→    if (regPart.slope < 0) risks.push(`Participation is declining at ${Math.abs(regPart.slope)}/day — projected to reach ${projectedParticipants} participants.`);
+  1098→    if (regImp.r2 < 0.3) risks.push(`Low model fit (R²=${round2(regImp.r2)}) — forecast is uncertain.`);
+  1099→    if (!risks.length) risks.push(`No declining trends detected over the ${horizonDays}-day horizon. Improvement forecast: ${projectedImprovement}%.`);
+  1100→
+  1101→    const title = input.programId
+  1102→      ? `Risk forecast for ${input.programId}: ${regImp.slope < 0 || regPart.slope < 0 ? "declining trends detected" : "stable trajectory"} over ${horizonDays}d`
+  1103→      : `Risk forecast: ${regImp.slope < 0 || regPart.slope < 0 ? "declining trends detected" : "stable trajectory"} over ${horizonDays}d`;
+  1104→
+  1105→    const summary = `Based on ${series.length} history data points across ${evidenceList.length} evidence accumulation(s), a linear regression forecasts improvement at ${projectedImprovement}% and participation at ${projectedParticipants} after ${horizonDays} days. Improvement slope: ${round2(regImp.slope)}/day (R²=${round2(regImp.r2)}). Participation slope: ${round2(regPart.slope)}/day (R²=${round2(regPart.r2)}).`;
+  1106→
+  1107→    const evidence = [
+  1108→      { source: "evidence_history", detail: `${series.length} data points, ${evidenceList.length} programs` },
+  1109→      { source: "linear_regression", detail: `improvement slope=${round2(regImp.slope)}/day, R²=${round2(regImp.r2)}` },
+  1110→      { source: "forecast", detail: `+${horizonDays}d: improvement=${projectedImprovement}%, participants=${projectedParticipants}` },
+  1111→    ];
+  1112→
+  1113→    const recommendations = [
+  1114→      ...(regImp.slope < 0 ? [`Reverse the improvement decline — projected to drop to ${projectedImprovement}% within ${horizonDays} days without intervention.`] : []),
+  1115→      ...(regPart.slope < 0 ? [`Reverse participation decline — projected to fall to ${projectedParticipants} participants.`] : []),
+  1116→      ...(regImp.r2 < 0.3 ? [`Low R² (${round2(regImp.r2)}) — gather more data before acting decisively.`] : []),
+  1117→      `Re-run this forecast weekly to detect when slopes reverse.`,
+  1118→    ];
+  1119→
+  1120→    return {
+  1121→      insight: {
+  1122→        type: "risk_forecasting",
+  1123→        title,
+  1124→        summary,
+  1125→        confidence: round2(confidence),
+  1126→        evidence,
+  1127→        recommendations,
+  1128→        aiTraceId: undefined,
+  1129→        explainable: true,
+  1130→        traceable: true,
+  1131→        createdBy: input.createdBy,
+  1132→        createdAt: now,
+  1133→      },
+  1134→      explanation: {
+  1135→        insightId: "" as InsightId,
+  1136→        methodology: "statistical_analysis",
+  1137→        explanation: `Collected the history field from each evidence accumulation, normalized timestamps to days from the first sample, then fit two simple linear regressions (least squares): improvement vs day and participants vs day. Extrapolated the regression line forward by ${horizonDays} days. R² (coefficient of determination) measures how well the linear model fits; values near 1 indicate strong linear structure, near 0 indicate high noise.`,
+  1138→        evidenceTrail: series.slice(-5).map((s) => ({
+  1139→          source: "evidence_history",
+  1140→          detail: `day=${round2((s.ts - t0) / 86400000)}, improvement=${round2(s.improvement)}, participants=${s.participants}`,
+  1141→          timestamp: new Date(s.ts).toISOString(),
+  1142→        })),
+  1143→        computationSteps: steps,
+  1144→        dataPoints: series.length,
+  1145→        generatedAt: now,
+  1146→      },
+  1147→    };
+  1148→  }
+  1149→
+  1150→  private async generateOutcomeSummary(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+  1151→    const evidenceList = await fetchEvidenceAccumulations(input.programId);
+  1152→    const now = getClock().iso();
+  1153→    const steps: string[] = [];
+  1154→    steps.push(`Fetched ${evidenceList.length} evidence accumulation(s).`);
+  1155→
+  1156→    if (!evidenceList.length) {
+  1157→      return this.buildNoDataInsight(input, "outcome_summarization", "No evidence accumulations available to summarize.", now, steps);
+  1158→    }
+  1159→
+  1160→    const totalParticipants = evidenceList.reduce((a, e) => a + e.totalParticipants, 0);
+  1161→    const totalMeasurements = evidenceList.reduce((a, e) => a + e.totalMeasurements, 0);
+  1162→    const avgImprovements = evidenceList.map((e) => e.averageImprovement);
+  1163→    const completionRates = evidenceList.map((e) => e.completionRate);
+  1164→    const retentionRates = evidenceList.map((e) => e.retentionRate);
+  1165→
+  1166→    const overallAvgImprovement = round2(mean(avgImprovements));
+  1167→    const overallCompletion = round2(mean(completionRates));
+  1168→    const overallRetention = round2(mean(retentionRates));
+  1169→    const evidenceLevels = evidenceList.map((e) => e.evidenceLevel);
+  1170→    const strongCount = evidenceLevels.filter((l) => l === "strong" || l === "established").length;
+  1171→
+  1172→    steps.push(`Aggregated across ${evidenceList.length} programs: ${totalParticipants} participants, ${totalMeasurements} measurements.`);
+  1173→    const confidence = clamp(0.4 + Math.min(0.4, totalParticipants / 10000) + (strongCount / Math.max(1, evidenceList.length)) * 0.15, 0, 0.95);
+  1174→
+  1175→    const scope = input.programId ? `program ${input.programId}` : `${evidenceList.length} programs`;
+  1176→    const title = `Outcome summary: ${scope} — avg improvement ${overallAvgImprovement}%, ${strongCount}/${evidenceList.length} programs at established/strong evidence`;
+  1177→    const summary = `Across ${scope}, ${totalParticipants} participants contributed ${totalMeasurements} measurements. Mean average improvement: ${overallAvgImprovement}%. Mean completion rate: ${Math.round(overallCompletion * 100)}%. Mean retention rate: ${Math.round(overallRetention * 100)}%. ${strongCount} of ${evidenceList.length} programs have reached established or strong evidence levels.`;
+  1178→
+  1179→    const evidence = [
+  1180→      { source: "evidence_accumulation", detail: `${evidenceList.length} programs, ${totalParticipants} participants, ${totalMeasurements} measurements` },
+  1181→      { source: "outcome_aggregation", detail: `avg improvement=${overallAvgImprovement}%, completion=${Math.round(overallCompletion * 100)}%, retention=${Math.round(overallRetention * 100)}%` },
+  1182→      { source: "evidence_levels", detail: `${strongCount}/${evidenceList.length} programs at established/strong` },
+  1183→    ];
+  1184→
+  1185→    const recommendations = [
+  1186→      `Use the ${overallAvgImprovement}% average improvement as the population baseline for benchmarking.`,
+  1187→      `The ${strongCount} established/strong programs are the best candidates for replication studies.`,
+  1188→      `${evidenceList.length - strongCount} programs still need more data — prioritize measurement collection there.`,
+  1189→    ];
+  1190→
+  1191→    return {
+  1192→      insight: {
+  1193→        type: "outcome_summarization",
+  1194→        title,
+  1195→        summary,
+  1196→        confidence: round2(confidence),
+  1197→        evidence,
+  1198→        recommendations,
+  1199→        aiTraceId: undefined,
+  1200→        explainable: true,
+  1201→        traceable: true,
+  1202→        createdBy: input.createdBy,
+  1203→        createdAt: now,
+  1204→      },
+  1205→      explanation: {
+  1206→        insightId: "" as InsightId,
+  1207→        methodology: "statistical_analysis",
+  1208→        explanation: `Aggregated the evidence accumulation fields across ${evidenceList.length} programs. Sums for participants and measurements; means for improvement, completion, and retention rates. Counted programs at "established" or "strong" evidence levels. No LLM used.`,
+  1209→        evidenceTrail: evidenceList.slice(0, 5).map((e) => ({
+  1210→          source: "evidence_accumulation",
+  1211→          detail: `programId=${e.programId}, participants=${e.totalParticipants}, improvement=${round2(e.averageImprovement)}, level=${e.evidenceLevel}`,
+  1212→          timestamp: e.lastUpdated,
+  1213→        })),
+  1214→        computationSteps: steps,
+  1215→        dataPoints: evidenceList.length,
+  1216→        generatedAt: now,
+  1217→      },
+  1218→    };
+  1219→  }
+  1220→
+  1221→  private async generateEvidenceSynthesis(input: InsightGenerateInput): Promise<{ insight: InsightDraft; explanation: StoredExplanation }> {
+  1222→    const [snapshots, evidence, benchmarks] = await Promise.all([
+  1223→      fetchPopulationSnapshots(),
+  1224→      fetchEvidenceAccumulations(input.programId),
+  1225→      fetchBenchmarks(input.programId),
+  1226→    ]);
+  1227→    const now = getClock().iso();
+  1228→    const steps: string[] = [];
+  1229→    steps.push(`Synthesized across ${snapshots.length} snapshots, ${evidence.length} evidence accumulations, ${benchmarks.length} benchmarks.`);
+  1230→
+  1231→    if (!snapshots.length && !evidence.length && !benchmarks.length) {
+  1232→      return this.buildNoDataInsight(input, "evidence_synthesis", "No platform data sources available for synthesis.", now, steps);
+  1233→    }
+  1234→
+  1235→    const sources: string[] = [];
+  1236→    if (snapshots.length) sources.push(`${snapshots.length} population snapshots`);
+  1237→    if (evidence.length) sources.push(`${evidence.length} evidence accumulations`);
+  1238→    if (benchmarks.length) sources.push(`${benchmarks.length} benchmarks`);
+  1239→
+  1240→    // Cross-source synthesis: average improvement from evidence, snapshot trend confirmation, benchmark comparison
+  1241→    const avgImprovementEvidence = evidence.length ? round2(mean(evidence.map((e) => e.averageImprovement))) : undefined;
+  1242→    const snapshotTrendDir = snapshots.length && snapshots[snapshots.length - 1].improvementTrends.length
+  1243→      ? snapshots[snapshots.length - 1].improvementTrends[snapshots[snapshots.length - 1].improvementTrends.length - 1].trend
+  1244→      : undefined;
+  1245→    const benchmarkAvg = benchmarks.length ? round2(mean(benchmarks.filter((b) => b.metric === "average_improvement").map((b) => b.value))) : undefined;
+  1246→
+  1247→    const agreement = (() => {
+  1248→      if (avgImprovementEvidence === undefined || benchmarkAvg === undefined) return "insufficient_data";
+  1249→      const diff = avgImprovementEvidence - benchmarkAvg;
+  1250→      if (Math.abs(diff) < 2) return "aligned";
+  1251→      return diff > 0 ? "evidence_above_benchmark" : "evidence_below_benchmark";
+  1252→    })();
+  1253→
+  1254→    steps.push(`Cross-source agreement: ${agreement} (evidence avg=${avgImprovementEvidence ?? "n/a"}, benchmark avg=${benchmarkAvg ?? "n/a"}, snapshot trend=${snapshotTrendDir ?? "n/a"}).`);
+  1255→
+  1256→    const confidence = clamp(
+  1257→      0.3 + (snapshots.length ? 0.15 : 0) + (evidence.length ? 0.2 : 0) + (benchmarks.length ? 0.15 : 0) + (agreement === "aligned" ? 0.15 : 0),
+  1258→      0, 0.95,
+  1259→    );
+  1260→
+  1261→    const title = `Evidence synthesis: ${sources.join(", ")} — ${agreement}`;
+  1262→    const summary = `Synthesized evidence from ${sources.join(", ")}. ${avgImprovementEvidence !== undefined ? `Evidence accumulations report avg improvement ${avgImprovementEvidence}%. ` : ""}${benchmarkAvg !== undefined ? `Benchmarks suggest avg ${benchmarkAvg}%. ` : ""}${snapshotTrendDir ? `Population snapshot trend is ${snapshotTrendDir}. ` : ""}Cross-source agreement: ${agreement}.`;
+  1263→
+  1264→    const evidenceList: { source: string; detail: string }[] = [];
+  1265→    if (snapshots.length) evidenceList.push({ source: "population_snapshot", detail: `${snapshots.length} snapshots, latest trend=${snapshotTrendDir ?? "n/a"}` });
+  1266→    if (evidence.length) evidenceList.push({ source: "evidence_accumulation", detail: `${evidence.length} programs, avg improvement=${avgImprovementEvidence ?? "n/a"}` });
+  1267→    if (benchmarks.length) evidenceList.push({ source: "benchmark", detail: `${benchmarks.length} benchmarks, avg=${benchmarkAvg ?? "n/a"}` });
+  1268→    evidenceList.push({ source: "cross_source_agreement", detail: agreement });
+  1269→
+  1270→    const recommendations = [
+  1271→      ...(agreement === "evidence_below_benchmark" ? ["Evidence falls below benchmarks — investigate program design or population mismatch."] : []),
+  1272→      ...(agreement === "evidence_above_benchmark" ? ["Evidence exceeds benchmarks — strong case for scale-up."] : []),
+  1273→      ...(agreement === "aligned" ? ["Evidence and benchmarks are aligned — confident in current conclusions."] : ["Collect more data to enable cross-source agreement analysis."]),
+  1274→      "Re-synthesize weekly as new snapshots and evidence arrive.",
+  1275→    ];
+  1276→
+  1277→    return {
+  1278→      insight: {
+  1279→        type: "evidence_synthesis",
+  1280→        title,
+  1281→        summary,
+  1282→        confidence: round2(confidence),
+  1283→        evidence: evidenceList,
+  1284→        recommendations,
+  1285→        aiTraceId: undefined,
+  1286→        explainable: true,
+  1287→        traceable: true,
+  1288→        createdBy: input.createdBy,
+  1289→        createdAt: now,
+  1290→      },
+  1291→      explanation: {
+  1292→        insightId: "" as InsightId,
+  1293→        methodology: "statistical_analysis",
+  1294→        explanation: `Pulled data from three independent platform sources (population snapshots, evidence accumulations, benchmarks)${input.programId ? ` scoped to program ${input.programId}` : ""}. Computed aggregate metrics per source, then compared them: average improvement from evidence vs. benchmark average (agreement = within 2 percentage points), and noted the latest population trend direction.`,
+  1295→        evidenceTrail: [
+  1296→          ...(snapshots.length ? [{ source: "population_snapshot", detail: `${snapshots.length} snapshots`, timestamp: snapshots[snapshots.length - 1].capturedAt }] : []),
+  1297→          ...(evidence.length ? [{ source: "evidence_accumulation", detail: `${evidence.length} programs, avg=${avgImprovementEvidence ?? "n/a"}`, timestamp: evidence[0].lastUpdated }] : []),
+  1298→          ...(benchmarks.length ? [{ source: "benchmark", detail: `${benchmarks.length} benchmarks, avg=${benchmarkAvg ?? "n/a"}`, timestamp: benchmarks[0].computedAt }] : []),
+  1299→        ],
+  1300→        computationSteps: steps,
+  1301→        dataPoints: snapshots.length + evidence.length + benchmarks.length,
+  1302→        generatedAt: now,
+  1303→      },
+  1304→    };
+  1305→  }
+  1306→
+  1307→  // -----------------------------------------------------------------------
+  1308→  // Helpers
+  1309→  // -----------------------------------------------------------------------
+  1310→
+  1311→  private buildNoDataInsight(
+  1312→    input: InsightGenerateInput,
+  1313→    type: InsightType,
+  1314→    reason: string,
+  1315→    now: string,
+  1316→    steps: string[],
+  1317→  ): { insight: InsightDraft; explanation: StoredExplanation } {
+  1318→    return {
+  1319→      insight: {
+  1320→        type,
+  1321→        title: `${type}: insufficient platform data`,
+  1322→        summary: reason,
+  1323→        confidence: 0.1,
+  1324→        evidence: [{ source: "platform_data", detail: reason }],
+  1325→        recommendations: [
+  1326→          "Collect more measurements before re-running this insight.",
+  1327→          "Verify that sibling research modules (population, evidence, benchmarks, comparative) are loaded.",
+  1328→        ],
+  1329→        aiTraceId: undefined,
+  1330→        explainable: true,
+  1331→        traceable: true,
+  1332→        createdBy: input.createdBy,
+  1333→        createdAt: now,
+  1334→      },
+  1335→      explanation: {
+  1336→        insightId: "" as InsightId,
+  1337→        methodology: "statistical_analysis",
+  1338→        explanation: `The insight engine attempted to compute a ${type} insight but the underlying platform data sources returned insufficient records. Returned a low-confidence placeholder with the exact reason.`,
+  1339→        evidenceTrail: [{ source: "platform_data", detail: reason, timestamp: now }],
+  1340→        computationSteps: steps,
+  1341→        dataPoints: 0,
+  1342→        generatedAt: now,
+  1343→      },
+  1344→    };
+  1345→  }
+  1346→
+  1347→  private index<K>(map: Map<K, InsightId[]>, key: K, id: InsightId): void {
+  1348→    const list = map.get(key) ?? [];
+  1349→    if (!list.includes(id)) map.set(key, [...list, id]);
+  1350→  }
+  1351→
+  1352→  private freeze(ins: MutableInsight): ResearchInsight {
+  1353→    return {
+  1354→      id: ins.id,
+  1355→      type: ins.type,
+  1356→      title: ins.title,
+  1357→      summary: ins.summary,
+  1358→      confidence: ins.confidence,
+  1359→      evidence: ins.evidence.map((e) => ({ ...e })),
+  1360→      recommendations: [...ins.recommendations],
+  1361→      aiTraceId: ins.aiTraceId,
+  1362→      explainable: ins.explainable,
+  1363→      traceable: ins.traceable,
+  1364→      createdBy: ins.createdBy,
+  1365→      createdAt: ins.createdAt,
+  1366→    };
+  1367→  }
+  1368→}
+  1369→
+  1370→// ---------------------------------------------------------------------------
+  1371→// Singleton
+  1372→// ---------------------------------------------------------------------------
+  1373→
+  1374→let _engine: ResearchInsightEngine | null = null;
+  1375→export function getInsights(): ResearchInsightEngine {
+  1376→  if (!_engine) _engine = new ResearchInsightEngine();
+  1377→  return _engine;
+  1378→}
+  1379→
+  1380→export { RESEARCH_EVENTS, type ResearchInsight, type InsightType, type InsightId };
+  1381→

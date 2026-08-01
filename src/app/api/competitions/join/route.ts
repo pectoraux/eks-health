@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { ensurePlatform, getCompetitionRegistry, getQualificationManager } from "@/lib/platform-server";
+import { ensurePlatform, ensureHydrated, getCompetitionRegistry, getQualificationManager } from "@/lib/platform-server";
 import { getSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   ensurePlatform();
+  await ensureHydrated();
   const session = await getSession();
   if (!session) return NextResponse.json({ ok: false, error: { message: "Not authenticated" } }, { status: 401 });
 

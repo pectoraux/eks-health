@@ -265,11 +265,11 @@ export async function seedCompetitionDemoData(): Promise<{ competitionIds: Compe
         type: "season_end",
         podiumSize: 5,
         distribution: [
-          { rank: 1, percentage: 30 },
-          { rank: 2, percentage: 20 },
+          { rank: 1, percentage: 35 },
+          { rank: 2, percentage: 25 },
           { rank: 3, percentage: 15 },
-          { rank: 4, percentage: 10 },
-          { rank: 5, percentage: 5 },
+          { rank: 4, percentage: 15 },
+          { rank: 5, percentage: 10 },
         ],
         minPoolThreshold: 100,
         conditions: [
@@ -278,9 +278,18 @@ export async function seedCompetitionDemoData(): Promise<{ competitionIds: Compe
         ],
       });
 
+      // Transition competition to active state (draft → scheduled → registration → active)
+      try {
+        comps.transition(comp.id, "scheduled");
+        comps.transition(comp.id, "registration");
+        comps.transition(comp.id, "active");
+      } catch (transitionErr) {
+        console.error("[competitions] transition failed for", comp.id, transitionErr);
+      }
+
       competitionIds.push(comp.id);
-    } catch {
-      // already exists
+    } catch (err) {
+      console.error("[competitions] seed failed for", dc.slug, err);
     }
   }
 
