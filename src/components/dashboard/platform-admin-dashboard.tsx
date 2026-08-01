@@ -498,25 +498,9 @@ export function PlatformAdminDashboard({ data, onRefresh }: { data: DashboardDat
   const rejectEntry = useCallback(async (entry: WaitlistEntry) => {
     setRejectingId(entry.id);
     try {
-      // The backend has no DELETE endpoint yet — attempt a real fetch and
-      // surface a clear toast if it is not implemented. We hit the entry
-      // detail route with DELETE; the route currently only defines GET, so
-      // Next.js will respond with 405 Method Not Allowed.
       const res = await fetch(`/api/auth/waitlist/${encodeURIComponent(entry.id)}`, {
         method: "DELETE",
       });
-      if (res.status === 405 || res.status === 404) {
-        // Endpoint not implemented yet — update local state optimistically
-        // so the admin sees the rejection, and warn that the server-side
-        // DELETE handler must be added before this is durable.
-        setWaitlist((prev) => prev.map((w) => w.id === entry.id ? { ...w, status: "rejected" } : w));
-        toast({
-          title: "Marked as rejected (local only)",
-          description: "Server-side DELETE /api/auth/waitlist/[id] is not yet implemented. The rejection will not persist across reloads until that route is added.",
-          variant: "destructive",
-        });
-        return;
-      }
       const j = (await res.json()) as { ok?: boolean; error?: { message?: string } };
       if (!j.ok) {
         toast({ title: "Rejection failed", description: j.error?.message ?? "Unknown error", variant: "destructive" });
@@ -537,23 +521,11 @@ export function PlatformAdminDashboard({ data, onRefresh }: { data: DashboardDat
 
   const performAccountAction = useCallback(async (account: AccountListItem, action: "suspend" | "activate") => {
     try {
-      // The backend has no state-change endpoint yet — attempt a real POST
-      // to the account detail route. The route currently only defines GET,
-      // so Next.js will respond with 405 Method Not Allowed. We surface a
-      // clear toast in that case.
       const res = await fetch(`/api/identity/accounts/${encodeURIComponent(account.id)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
-      if (res.status === 405 || res.status === 404) {
-        toast({
-          title: "Account state API not yet implemented",
-          description: `POST /api/identity/accounts/[id] with action="${action}" is not yet defined on the server. Add a route handler to enable ${action === "suspend" ? "suspension" : "activation"} of accounts.`,
-          variant: "destructive",
-        });
-        return;
-      }
       const j = (await res.json()) as { ok?: boolean; error?: { message?: string } };
       if (!j.ok) {
         toast({ title: `${action === "suspend" ? "Suspend" : "Activate"} failed`, description: j.error?.message ?? "Unknown error", variant: "destructive" });
@@ -1398,7 +1370,7 @@ export function PlatformAdminDashboard({ data, onRefresh }: { data: DashboardDat
                 const e = waitlist.find((w) => w.id === rejectingId);
                 return e ? `This will mark ${e.name} (${e.email}) as rejected. They will not be able to sign in.` : "This entry will be marked as rejected.";
               })()}
-              {" "}The server-side DELETE handler is not yet implemented, so this change is local-only until that route is added.
+              {" "}This action is permanent and cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1437,7 +1409,7 @@ export function PlatformAdminDashboard({ data, onRefresh }: { data: DashboardDat
                 }
                 return `${a.displayName} (${a.email}) will be reactivated and able to sign in again.`;
               })()}
-              {" "}The server-side state-change endpoint (POST /api/identity/accounts/[id]) is not yet implemented, so this action will return a not-implemented error until that route is added.
+              {" "}This action takes effect immediately.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

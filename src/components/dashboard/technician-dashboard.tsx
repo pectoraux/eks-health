@@ -288,7 +288,7 @@ export function TechnicianDashboard({ data, onRefresh }: { data: DashboardData; 
       {/* Sessions + Appointments row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SessionsCard sessions={sessions} loading={loadingSub} onRefresh={handleManualRefresh} />
-        <AppointmentsCard appointments={appointments} loading={loadingSub} />
+        <AppointmentsCard appointments={appointments} loading={loadingSub} onRefresh={handleManualRefresh} />
       </div>
 
       {/* Devices + Disputes/Fraud row */}
@@ -435,9 +435,11 @@ function SessionsCard({
 function AppointmentsCard({
   appointments,
   loading,
+  onRefresh,
 }: {
   appointments: Appointment[];
   loading: boolean;
+  onRefresh: () => void;
 }) {
   const [scheduleOpen, setScheduleOpen] = useState(false);
 
@@ -523,14 +525,25 @@ function AppointmentsCard({
               technician appointments API once write endpoints ship.
             </DialogDescription>
           </DialogHeader>
-          <ScheduleFormStub
-            onSubmit={() => {
-              toast({
-                title: "Saved locally",
-                description:
-                  "Appointment draft captured. A POST /api/technicians/appointments endpoint is not yet available — refresh to re-sync server data.",
-              });
-              setScheduleOpen(false);
+          <ScheduleForm
+            onSubmit={async (data) => {
+              try {
+                const res = await fetch("/api/technicians/appointments", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(data),
+                });
+                const j = await res.json();
+                if (j.ok) {
+                  toast({ title: "Appointment scheduled", description: `Appointment ID: ${j.data.id}` });
+                  setScheduleOpen(false);
+                  onRefresh();
+                } else {
+                  toast({ title: "Failed", description: j.error?.message ?? "Could not schedule", variant: "destructive" });
+                }
+              } catch {
+                toast({ title: "Error", description: "Network error", variant: "destructive" });
+              }
             }}
           />
         </DialogContent>
@@ -539,21 +552,42 @@ function AppointmentsCard({
   );
 }
 
-function ScheduleFormStub({ onSubmit }: { onSubmit: () => void }) {
+function ScheduleForm({ onSubmit }: { onSubmit: (data: {
+  technicianId: string;
+  participantId: string;
+  programId: string;
+  sessionType: string;
+  scheduledAt: string;
+  durationMinutes?: number;
+  notes?: string[];
+}) => void }) {
   const [participant, setParticipant] = useState("");
   const [date, setDate] = useState("");
   const [duration, setDuration] = useState("30");
   const [type, setType] = useState("in_clinic");
 
+  const handleSubmit = () => {
+    // Convert datetime-local to ISO
+    const iso = date ? new Date(date).toISOString() : new Date().toISOString();
+    onSubmit({
+      technicianId: "tech_demo_1", // will be overridden by server if needed
+      participantId: participant || "acc_demo_1",
+      programId: "prg_cardio_care",
+      sessionType: type,
+      scheduledAt: iso,
+      durationMinutes: parseInt(duration, 10) || 30,
+    });
+  };
+
   return (
     <div className="space-y-3 py-2">
       <div className="space-y-1.5">
-        <Label htmlFor="appt-participant">Participant</Label>
+        <Label htmlFor="appt-participant">Participant ID</Label>
         <Input
           id="appt-participant"
           value={participant}
           onChange={(e) => setParticipant(e.target.value)}
-          placeholder="Participant name or ID"
+          placeholder="acc_demo_1"
         />
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -590,7 +624,7 @@ function ScheduleFormStub({ onSubmit }: { onSubmit: () => void }) {
         </Select>
       </div>
       <DialogFooter>
-        <Button variant="outline" onClick={onSubmit}>Save Draft</Button>
+        <Button onClick={handleSubmit}>Schedule</Button>
       </DialogFooter>
     </div>
   );
