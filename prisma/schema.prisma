@@ -1,14 +1,12 @@
-// Eks-Health Prisma schema — SQLite.
-// Real persistence layer for accounts, sessions, waitlist, and health
-// measurements. This is the first DB-backed slice of the platform; the rest
-// of the modules still run on in-memory managers and will be migrated later.
+// Eks-Health Prisma schema — PostgreSQL (Neon)
+// Used both locally and on Vercel for consistent persistence.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -20,8 +18,8 @@ model EksAccount {
   id            String   @id
   email         String   @unique
   displayName   String
-  state         String   @default("active") // unverified | active | suspended | locked | deleted
-  personas      String   @default("participant") // comma-separated
+  state         String   @default("active")
+  personas      String   @default("participant")
   activePersona String   @default("participant")
   passwordHash  String?
   passwordSalt  String?
@@ -48,7 +46,7 @@ model EksSession {
   refreshExpiresAt   DateTime
   absoluteExpiresAt  DateTime
   lastActiveAt       DateTime @default(now())
-  state              String   @default("active") // active | expired | revoked | reauth_required
+  state              String   @default("active")
   ipAddress          String?
   userAgent          String?
   riskScore          Int      @default(0)
@@ -63,10 +61,10 @@ model EksWaitlistEntry {
   name            String
   email           String
   country         String
-  interestedRoles String   @default("participant") // comma-separated
+  interestedRoles String   @default("participant")
   reason          String   @default("")
   referral        String?
-  status          String   @default("pending") // pending | approved | rejected
+  status          String   @default("pending")
   accountId       String?
   createdAt       DateTime @default(now())
   approvedAt      DateTime?
@@ -76,17 +74,17 @@ model EksWaitlistEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Health: measurements (the core health data type)
+// Health: measurements
 // ---------------------------------------------------------------------------
 
 model EksMeasurement {
-  id               String   @id
-  profileId        String
-  schemaId         String
-  dataJson         String   // full Measurement object as JSON snapshot
-  verificationState String  @default("unverified")
-  collectedAt      DateTime
-  createdAt        DateTime @default(now())
+  id                String   @id
+  profileId         String
+  schemaId          String
+  dataJson          String
+  verificationState String   @default("unverified")
+  collectedAt       DateTime
+  createdAt         DateTime @default(now())
 
   @@index([profileId])
   @@index([schemaId])
@@ -94,15 +92,15 @@ model EksMeasurement {
 }
 
 // ---------------------------------------------------------------------------
-// Missions: goals + habits (participant-facing engagement)
+// Missions: goals + habits
 // ---------------------------------------------------------------------------
 
 model EksGoal {
-  id           String   @id
+  id            String   @id
   participantId String
-  dataJson     String   // full Goal object as JSON snapshot
-  state        String   @default("active")
-  createdAt    DateTime @default(now())
+  dataJson      String
+  state         String   @default("active")
+  createdAt     DateTime @default(now())
 
   @@index([participantId])
   @@index([state])
@@ -111,7 +109,7 @@ model EksGoal {
 model EksHabit {
   id            String   @id
   participantId String
-  dataJson      String   // full Habit object as JSON snapshot
+  dataJson      String
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
 
@@ -119,11 +117,15 @@ model EksHabit {
   @@index([active])
 }
 
+// ---------------------------------------------------------------------------
+// Competitions + Marketplace + Developers + Tech Sessions
+// ---------------------------------------------------------------------------
+
 model EksCompetition {
   id         String   @id
   slug       String   @unique
   programId  String
-  dataJson   String   // full Competition object as JSON snapshot
+  dataJson   String
   state      String   @default("draft")
   createdAt  DateTime @default(now())
 
@@ -132,13 +134,13 @@ model EksCompetition {
 }
 
 model EksListing {
-  id         String   @id
-  slug       String   @unique
-  programId  String
+  id          String   @id
+  slug        String   @unique
+  programId   String
   developerId String?
-  dataJson   String   // full MarketplaceListing object as JSON snapshot
-  status     String   @default("draft")
-  createdAt  DateTime @default(now())
+  dataJson    String
+  status      String   @default("draft")
+  createdAt   DateTime @default(now())
 
   @@index([programId])
   @@index([status])
@@ -148,7 +150,7 @@ model EksListing {
 model EksDeveloper {
   id        String   @id
   email     String   @unique
-  dataJson  String   // full DeveloperProfile object as JSON snapshot
+  dataJson  String
   verified  Boolean  @default(false)
   createdAt DateTime @default(now())
 
@@ -160,7 +162,7 @@ model EksTechSession {
   technicianId  String?
   participantId String?
   programId     String?
-  dataJson      String   // full MeasurementSession object as JSON snapshot
+  dataJson      String
   state         String   @default("scheduled")
   createdAt     DateTime @default(now())
 

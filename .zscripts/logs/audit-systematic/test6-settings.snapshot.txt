@@ -1,0 +1,15 @@
+- button "Settings" [ref=e2]
+- button "Sign out" [ref=e3]
+- heading "Settings" [level=1, ref=e4]
+- textbox "Display Name" [ref=e5]: Ama Serwaa
+- textbox [disabled, ref=e6]: ama@eks.health
+- button "Save Profile" [disabled, ref=e7]
+- switch "Toggle MFA" [checked=false, ref=e8]
+- button "Change" [ref=e9]
+- button "Browse Marketplace" [ref=e10]
+- button "Manage Consent" [ref=e11]
+- switch "Toggle Mission reminders" [checked=true, ref=e12]
+- switch "Toggle Competition updates" [checked=true, ref=e13]
+- switch "Toggle Reward notifications" [checked=true, ref=e14]
+- switch "Toggle Research participation" [checked=false, ref=e15]
+- region "Notifications (F8)" [ref=e1]

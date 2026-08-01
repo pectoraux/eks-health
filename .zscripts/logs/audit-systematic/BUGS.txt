@@ -1,0 +1,9 @@
+[T2] Sign-in bounced back to /sign-in: Welcome=no, Missions=no, Habits=no, url=https://eks-health.vercel.app/sign-in
+[T3] Marketplace URL ok but session probe null (cold start): url=https://eks-health.vercel.app/marketplace, session=200|1|{\ok\:true,\data\:null}
+[T4] Program detail 'not found': expected_slug=Cardio Care|cardio-care, url=https://eks-health.vercel.app/programs/cardio-care, body=39, h1=
+[T8] Role switch failed: before=200|1|{\ok\:true,\data\:null}, after=200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+[T9] Back navigation session null: url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+[T10] Direct URL rendered but session probe null (cold start): url=https://eks-health.vercel.app/dashboard/timeline, session=200|1|{\ok\:true,\data\:null}
+[T11] Admin dashboard incomplete: session=200|1|{\ok\:true,\data\:null}, welcome=yes, accounts=no, waitlist=no, url=https://eks-health.vercel.app/dashboard
+[T12a] /api/auth/session failed: 200|1|{\ok\:true,\data\:null}
+[T12b] /api/dashboard failed: 401|0|Not authenticated

@@ -7,7 +7,8 @@ export function GET() {
     const profiles = getListingRegistry();
     return {
       listings: profiles.list({ status: "published" }).map((l) => ({
-        id: l.id, name: l.solution.name, tagline: l.solution.tagline, category: l.solution.category,
+        id: l.id, slug: l.solution.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, ""),
+        name: l.solution.name, tagline: l.solution.tagline, category: l.solution.category,
         bodySystems: l.solution.bodySystems, healthGoals: l.solution.healthGoals,
         developerName: l.developerName, pricing: l.pricing,
         supportedCountries: l.supportedCountries, installCount: l.installCount,

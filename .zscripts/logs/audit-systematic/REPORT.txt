@@ -1,0 +1,203 @@
+Eks-Health systematic bug audit
+Task ID:   audit-systematic-1
+Target:    https://eks-health.vercel.app
+Started:   2026-08-01T05:14:24Z
+Browser:   agent-browser 0.32.3
+
+
+================================================================
+TEST 1 — Landing page renders and Sign In button navigates to /sign-in
+================================================================
+  Action: Open https://eks-health.vercel.app/
+  Final URL after open: https://eks-health.vercel.app/
+  Landing headings: Prevent diseasebefore it happens. | One platform. Every health journey. | Built for every participant in the ecosystem
+  Expected: 'Prevent disease' heading present + a 'Sign In' button that routes to /sign-in
+  Found Sign In button ref=@e3, clicking
+  Final URL after Sign In click: https://eks-health.vercel.app/sign-in
+  Console errors on landing: 0
+  RESULT: PASS — Landing rendered with 'Prevent disease' heading and Sign In routed to /sign-in (url=https://eks-health.vercel.app/sign-in)
+
+================================================================
+TEST 2 — Sign in as ama@eks.health / DemoPass123! and verify dashboard
+================================================================
+  Action: Fill sign-in form and click Sign In
+  Final URL: https://eks-health.vercel.app/sign-in
+  Expected: redirect to /dashboard; show 'Welcome, Ama Serwaa'; missions/habits/goals/competitions cards visible
+  Welcome Ama Serwaa visible: no
+  Today's Missions visible:   no
+  Habit Streaks visible:      no
+  Active Goals visible:       no
+  Active Competitions visible:no
+  Dashboard cards found:      0
+  Console errors:             0
+  RESULT: FAIL — Bounced back to /sign-in (session not persisted across cold start) — url=https://eks-health.vercel.app/sign-in
+
+================================================================
+TEST 3 — From /dashboard, click Marketplace in the header (reported bug)
+================================================================
+  Action: Find 'Marketplace' button in the header and click it
+  Expected: stay logged in and land on /marketplace; if logged out → BUG
+  API sign-in (participant): 200|1|ama@eks.health|participant|
+  Found Marketplace button ref=@e3, clicking
+  Final URL after Marketplace click: https://eks-health.vercel.app/marketplace
+  /api/auth/session after Marketplace click: 200|1|{\ok\:true,\data\:null}
+  Marketplace listing cards: 5
+  RESULT: WARN — Routed to /marketplace but /api/auth/session returned null data (cold-start session loss on probe instance) — url=https://eks-health.vercel.app/marketplace
+
+================================================================
+TEST 4 — On /marketplace, click a listing card (reported bug: 'Program not found')
+================================================================
+  Action: Click the first listing card on /marketplace
+  Expected: program detail page renders (NOT 'Program not found')
+  First listing name|expected slug: Cardio Care|cardio-care
+  Final URL after card click: https://eks-health.vercel.app/programs/cardio-care
+  'Program not found' visible: yes
+  Body text length:           39
+  H1 on page:                 
+  Install button visible:     no
+  Console errors:             0
+  RESULT: FAIL — Program detail shows 'Program not found' — listing IDs differ across serverless instances (url=https://eks-health.vercel.app/programs/cardio-care)
+
+================================================================
+TEST 5 — Navigate to /dashboard/timeline
+================================================================
+  Action: Open /dashboard/timeline directly
+  Expected: renders with entries; user stays logged in
+  Final URL: https://eks-health.vercel.app/dashboard/timeline
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9wu9fhck6n4v2qvl5zfkh9\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9x33r7
+  Timeline filter buttons: 4
+  Timeline entries:        12
+  Headings:                Health Timeline
+  Console errors:          0
+  RESULT: PASS — Timeline rendered with 12 entries, user still logged in
+
+================================================================
+TEST 6 — Navigate to /dashboard/settings
+================================================================
+  Action: Open /dashboard/settings
+  Expected: renders all cards; user stays logged in
+  Final URL: https://eks-health.vercel.app/dashboard/settings
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9wu9fhck6n4v2qvl5zfkh9\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9x33r7
+  Settings cards:   6
+  Settings headings:
+  Console errors:   0
+  RESULT: PASS — Settings rendered with 6 cards, user still logged in
+
+================================================================
+TEST 7 — Navigate to /console
+================================================================
+  Action: Open /console
+  Expected: renders; user stays logged in
+  Final URL: https://eks-health.vercel.app/console
+  /api/auth/session: 200|1|{\accountId\:\acc_0ms9wu9fhck6n4v2qvl5zfkh9\,\email\:\ama@eks.health\,\displayName\:\Ama Serwaa\,\activePersona\:\participant\,\personas\:[\participant\],\sessionId\:\ses_0ms9x33r7
+  Console nav items:  20
+  Console headings:   Eks-Health Preventive Health Operating System
+  Console body len:   4006
+  Console errors:     0
+  RESULT: PASS — Console rendered (body=4006, nav=20), session valid
+
+================================================================
+TEST 8 — Role switcher on dashboard (admin)
+================================================================
+  Action: Sign in as admin (ekontetevi@gmail.com), click 'Developer' role
+  Expected: dashboard updates; /api/auth/session reflects new activePersona
+  API sign-in (admin): 200|1|ekontetevi@gmail.com|platform_admin|
+  Pre-navigation session: 200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+  Dashboard URL: https://eks-health.vercel.app/dashboard
+  /api/auth/session before switch: 200|1|{\ok\:true,\data\:null}
+  Found Developer role button ref=@e12, clicking
+  /api/auth/session after switch click: 200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+  Dashboard URL after switch: https://eks-health.vercel.app/sign-in
+  Developer-specific content visible: yes
+  RESULT: FAIL — Role switch did not change persona: session=200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+
+================================================================
+TEST 9 — Back navigation from marketplace
+================================================================
+  Action: Sign in as participant, go to /marketplace, use browser back
+  Expected: land back on /dashboard and stay logged in
+  /dashboard URL: https://eks-health.vercel.app/sign-in
+  URL before back: https://eks-health.vercel.app/marketplace
+  URL after back:  https://eks-health.vercel.app/sign-in
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  RESULT: FAIL — Back navigation: session is null after back (url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}) — cold-start session loss
+
+================================================================
+TEST 10 — Direct URL access to /dashboard/timeline
+================================================================
+  Action: Sign in fresh, then directly open /dashboard/timeline
+  Expected: stay logged in and view the page (NOT redirected to /sign-in)
+  Final URL: https://eks-health.vercel.app/dashboard/timeline
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  Timeline entries on direct access: 12
+  Timeline H1: Health Timeline
+  RESULT: WARN — Direct URL: /dashboard/timeline rendered (12 entries) but /api/auth/session returned null (cold-start session loss)
+
+================================================================
+TEST 11 — Sign in as admin (ekontetevi@gmail.com / Payswap123456)
+================================================================
+  Action: Sign out, sign in as admin, verify admin dashboard
+  Expected: dashboard shows accounts + waitlist (platform_admin persona)
+  Final URL: https://eks-health.vercel.app/dashboard
+  /api/auth/session: 200|1|{\ok\:true,\data\:null}
+  /api/dashboard snippet: 401|0|Not authenticated
+  Welcome Platform Admin visible: yes
+  'Accounts' visible:            no
+  'Waitlist' visible:            no
+  Account rows found:            0
+  Console errors:                0
+  /api/identity/accounts: 200|1|[{\id\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\state\:\active\,\personas\:[\platform_admin\,\health_technician\,\deve
+  /api/auth/waitlist:     500|0|{}
+  RESULT: FAIL — Admin dashboard incomplete: session=200|1|{\ok\:true,\data\:null}, welcome=yes, accounts=no, waitlist=no
+
+================================================================
+TEST 12 — API consistency checks (4 endpoints)
+================================================================
+  Action: Hit 4 core APIs from the browser, check 200 + data shape
+  Expected: all four return 200 with non-empty data
+  [12a] GET /api/auth/session:       200|1|{\ok\:true,\data\:null}
+  [12b] GET /api/dashboard:          401|0|Not authenticated
+  [12c] GET /api/marketplace/listings: 200|1|{\listings\:[{\id\:\lst_0ms9wu5seci7jf8njiymzrd78\,\name\:\Cardio Care\,\tagline\:\Preventive cardiovascular health program\,\category\:\cardiovascular\,\bodySystems\:[\cardiovascu
+  [12d] GET /api/programs/list:      200|1|{\programs\:[{\id\:\prg_cardio_care\,\slug\:\cardio-care\,\name\:\Cardio Care\,\kind\:\program\,\category\:\cardiovascular\,\state\:\built\,\developerId\:\dev_demo_1\,\versionCount
+  Cross-check: /api/dashboard reports totalListings=401|; /api/marketplace/listings returned non-empty data
+  RESULT: FAIL — API consistency check failed (session=FAIL dashboard=FAIL listings=OK programs=OK)
+
+================================================================
+OVERALL SUMMARY
+================================================================
+  Tests passed: 4
+  Tests warned:2
+  Tests failed: 6
+
+  Per-test result:
+    T1|PASS|Landing rendered with 'Prevent disease' heading and Sign In routed to /sign-in (url=https://eks-health.vercel.app/sign-in)
+    T2|FAIL|Bounced back to /sign-in (session not persisted across cold start) — url=https://eks-health.vercel.app/sign-in
+    T3|WARN|Routed to /marketplace but /api/auth/session returned null data (cold-start session loss on probe instance) — url=https://eks-health.vercel.app/marketplace
+    T4|FAIL|Program detail shows 'Program not found' — listing IDs differ across serverless instances (url=https://eks-health.vercel.app/programs/cardio-care)
+    T5|PASS|Timeline rendered with 12 entries, user still logged in
+    T6|PASS|Settings rendered with 6 cards, user still logged in
+    T7|PASS|Console rendered (body=4006, nav=20), session valid
+    T8|FAIL|Role switch did not change persona: session=200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+    T9|FAIL|Back navigation: session is null after back (url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}) — cold-start session loss
+    T10|WARN|Direct URL: /dashboard/timeline rendered (12 entries) but /api/auth/session returned null (cold-start session loss)
+    T11|FAIL|Admin dashboard incomplete: session=200|1|{\ok\:true,\data\:null}, welcome=yes, accounts=no, waitlist=no
+    T12|FAIL|API consistency check failed (session=FAIL dashboard=FAIL listings=OK programs=OK)
+
+  Artifacts:
+    Report:      /home/z/my-project/.zscripts/logs/audit-systematic/REPORT.txt
+    Bugs:        /home/z/my-project/.zscripts/logs/audit-systematic/BUGS.txt
+    Logs dir:    /home/z/my-project/.zscripts/logs/audit-systematic/
+    Screenshots: /home/z/my-project/.zscripts/screenshots/audit-systematic/
+
+  ---- BUGS / ISSUES DISCOVERED ----
+[T2] Sign-in bounced back to /sign-in: Welcome=no, Missions=no, Habits=no, url=https://eks-health.vercel.app/sign-in
+[T3] Marketplace URL ok but session probe null (cold start): url=https://eks-health.vercel.app/marketplace, session=200|1|{\ok\:true,\data\:null}
+[T4] Program detail 'not found': expected_slug=Cardio Care|cardio-care, url=https://eks-health.vercel.app/programs/cardio-care, body=39, h1=
+[T8] Role switch failed: before=200|1|{\ok\:true,\data\:null}, after=200|1|{\accountId\:\acc_0ms9wu9dnoez3w6pnvyl5pnsa\,\email\:\ekontetevi@gmail.com\,\displayName\:\Platform Administrator\,\activePersona\:\platform_admin\,\personas\:[\platform_admin\,\he
+[T9] Back navigation session null: url=https://eks-health.vercel.app/sign-in, session=200|1|{\ok\:true,\data\:null}
+[T10] Direct URL rendered but session probe null (cold start): url=https://eks-health.vercel.app/dashboard/timeline, session=200|1|{\ok\:true,\data\:null}
+[T11] Admin dashboard incomplete: session=200|1|{\ok\:true,\data\:null}, welcome=yes, accounts=no, waitlist=no, url=https://eks-health.vercel.app/dashboard
+[T12a] /api/auth/session failed: 200|1|{\ok\:true,\data\:null}
+[T12b] /api/dashboard failed: 401|0|Not authenticated
+
+Finished: 2026-08-01T05:16:15Z

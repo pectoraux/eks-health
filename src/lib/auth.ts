@@ -16,7 +16,7 @@ import {
   asSessionId,
   type Account,
 } from "@/identity";
-import { ensurePlatform } from "@/lib/platform-server";
+import { ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 import {
   dbAddToWaitlist,
   dbGetWaitlist,
@@ -43,6 +43,8 @@ const ACCESS_COOKIE = "eks_access";
 /** Get the current session from cookies. */
 export async function getSession(): Promise<AuthSession | null> {
   ensurePlatform();
+  // Ensure DB-backed sessions + accounts are hydrated (critical for serverless).
+  await ensureHydrated();
   const cookieStore = await cookies();
   const accessToken = cookieStore.get(ACCESS_COOKIE)?.value;
   if (!accessToken) return null;
