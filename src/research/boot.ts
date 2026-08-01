@@ -133,12 +133,15 @@ export function seedResearchDemoData(): void {
     });
   } catch { /* */ }
 
-  // Trigger evidence accumulation for demo programs (async, fire-and-forget)
-  const evidence = getEvidenceEngine();
-  const demoProgramIds = ["prg_cardio_care", "prg_sleep_optimizer", "prg_fit_streak"];
-  for (const pid of demoProgramIds) {
-    void evidence.accumulate(pid as never).catch(() => { /* graceful */ });
-  }
+  // Trigger evidence accumulation for demo programs (async, fire-and-forget,
+  // NOT awaited — don't block the seed on this)
+  // Skip on serverless to avoid cold-start delays — evidence will accumulate
+  // naturally when the evidence API is called.
+  // const evidence = getEvidenceEngine();
+  // const demoProgramIds = ["prg_cardio_care", "prg_sleep_optimizer", "prg_fit_streak"];
+  // for (const pid of demoProgramIds) {
+  //   void evidence.accumulate(pid as never).catch(() => { /* graceful */ });
+  // }
 
   _seeded = true;
 }
