@@ -31,7 +31,7 @@ interface Listing {
 export default function ProgramDetailPage() {
   const router = useRouter();
   const params = useParams();
-  const id = params.id as string;
+  const id = (params.slug || params.id) as string;
   const [listing, setListing] = useState<Listing | null>(null);
   const [loading, setLoading] = useState(true);
   const [signedIn, setSignedIn] = useState(false);
