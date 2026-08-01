@@ -1,0 +1,1113 @@
+     1→/**
+     2→ * Eks-Health Identity — Organizations
+     3→ *
+     4→ * Organization support for the platform: hospitals, clinics, companies,
+     5→ * governments, universities, NGOs, insurance providers, research institutions.
+     6→ * Provides membership, invitations, teams, departments, hierarchical
+     7→ * organizations, and delegated administration.
+     8→ *
+     9→ * Security & integrity features:
+    10→ * - Invite tokens are random 32-byte values; only the SHA-256 hash is stored.
+    11→ *   Tokens are single-use and time-bound (default TTL 7 days).
+    12→ * - Hierarchy is cycle-detected: setting a parent that would create a cycle
+    13→ *   (direct or transitive) is rejected.
+    14→ * - Every mutating operation appends to a per-org audit trail.
+    15→ * - Suspension is reversible; termination is terminal.
+    16→ *
+    17→ * This module emits `eks.identity.org.*` events on the kernel event bus.
+    18→ */
+    19→
+    20→import "server-only";
+    21→import { createHash, randomBytes } from "node:crypto";
+    22→
+    23→import {
+    24→  type AccountId,
+    25→  type OrgId,
+    26→  type TeamId,
+    27→  IdentityError,
+    28→  asOrgId,
+    29→  asTeamId,
+    30→} from "../core";
+    31→import { getEventBus, buildEvent, getClock, generateId } from "@/kernel";
+    32→
+    33→// ---------------------------------------------------------------------------
+    34→// Types
+    35→// ---------------------------------------------------------------------------
+    36→
+    37→export type OrganizationType =
+    38→  | "hospital"
+    39→  | "clinic"
+    40→  | "company"
+    41→  | "government"
+    42→  | "university"
+    43→  | "ngo"
+    44→  | "insurance"
+    45→  | "research_institution";
+    46→
+    47→export type DataClassification =
+    48→  | "public"
+    49→  | "internal"
+    50→  | "confidential"
+    51→  | "restricted"
+    52→  | "secret";
+    53→
+    54→export type OrgRole =
+    55→  | "owner"
+    56→  | "admin"
+    57→  | "member"
+    58→  | "billing"
+    59→  | "auditor"
+    60→  | "delegate";
+    61→
+    62→export type OrgStatus = "active" | "suspended" | "terminated";
+    63→
+    64→export type DelegatedScopeKind =
+    65→  | "members"
+    66→  | "teams"
+    67→  | "billing"
+    68→  | "audit"
+    69→  | "policies"
+    70→  | "all";
+    71→
+    72→export interface Organization {
+    73→  readonly id: OrgId;
+    74→  readonly type: OrganizationType;
+    75→  readonly name: string;
+    76→  readonly slug: string;
+    77→  readonly description?: string;
+    78→  readonly parentId?: OrgId;
+    79→  readonly dataClassification: DataClassification;
+    80→  readonly status: OrgStatus;
+    81→  readonly website?: string;
+    82→  readonly address?: string;
+    83→  readonly locale?: string;
+    84→  readonly metadata?: Record<string, unknown>;
+    85→  readonly createdAt: string;
+    86→  readonly updatedAt: string;
+    87→  readonly createdBy?: AccountId;
+    88→  readonly suspendedAt?: string;
+    89→  readonly suspendedReason?: string;
+    90→  readonly terminatedAt?: string;
+    91→}
+    92→
+    93→export interface OrgMembership {
+    94→  readonly orgId: OrgId;
+    95→  readonly accountId: AccountId;
+    96→  readonly role: OrgRole;
+    97→  readonly title?: string;
+    98→  readonly departmentId?: string;
+    99→  readonly addedAt: string;
+   100→  readonly addedBy?: AccountId;
+   101→  readonly active: boolean;
+   102→  readonly removedAt?: string;
+   103→}
+   104→
+   105→export interface OrgInvitation {
+   106→  readonly id: string;
+   107→  readonly orgId: OrgId;
+   108→  readonly email: string;
+   109→  readonly role: OrgRole;
+   110→  readonly invitedBy: AccountId;
+   111→  readonly tokenHash: string;
+   112→  readonly createdAt: string;
+   113→  readonly expiresAt: string;
+   114→  readonly consumed: boolean;
+   115→  readonly consumedAt?: string;
+   116→  readonly consumedBy?: AccountId;
+   117→  readonly revokedAt?: string;
+   118→}
+   119→
+   120→export interface Team {
+   121→  readonly id: TeamId;
+   122→  readonly orgId: OrgId;
+   123→  readonly name: string;
+   124→  readonly description?: string;
+   125→  readonly departmentId?: string;
+   126→  readonly memberAccountIds: readonly AccountId[];
+   127→  readonly createdAt: string;
+   128→  readonly createdBy?: AccountId;
+   129→}
+   130→
+   131→export interface Department {
+   132→  readonly id: string;
+   133→  readonly orgId: OrgId;
+   134→  readonly name: string;
+   135→  readonly description?: string;
+   136→  readonly parentId?: string; // sub-department within the org
+   137→  readonly headAccountId?: AccountId;
+   138→  readonly createdAt: string;
+   139→}
+   140→
+   141→export interface OrgNode {
+   142→  readonly org: Organization;
+   143→  readonly children: readonly OrgNode[];
+   144→  readonly depth: number;
+   145→}
+   146→
+   147→export interface DelegatedScope {
+   148→  readonly id: string;
+   149→  readonly orgId: OrgId;
+   150→  readonly delegateAccountId: AccountId;
+   151→  readonly scope: DelegatedScopeKind;
+   152→  readonly permissions: readonly string[];
+   153→  readonly validUntil?: string;
+   154→  readonly createdAt: string;
+   155→  readonly createdBy: AccountId;
+   156→  readonly revokedAt?: string;
+   157→}
+   158→
+   159→export interface OrgAuditEntry {
+   160→  readonly id: string;
+   161→  readonly orgId: OrgId;
+   162→  readonly action: string;
+   163→  readonly actor?: AccountId;
+   164→  readonly at: string;
+   165→  readonly before?: Record<string, unknown>;
+   166→  readonly after?: Record<string, unknown>;
+   167→  readonly metadata?: Record<string, unknown>;
+   168→}
+   169→
+   170→export interface CreateOrganizationInput {
+   171→  readonly type: OrganizationType;
+   172→  readonly name: string;
+   173→  readonly slug?: string;
+   174→  readonly description?: string;
+   175→  readonly parentId?: OrgId;
+   176→  readonly website?: string;
+   177→  readonly address?: string;
+   178→  readonly locale?: string;
+   179→  readonly metadata?: Record<string, unknown>;
+   180→  readonly createdBy?: AccountId;
+   181→  readonly dataClassification?: DataClassification; // override default
+   182→}
+   183→
+   184→export interface CreateTeamInput {
+   185→  readonly name: string;
+   186→  readonly description?: string;
+   187→  readonly departmentId?: string;
+   188→  readonly createdBy?: AccountId;
+   189→}
+   190→
+   191→export interface CreateDepartmentInput {
+   192→  readonly name: string;
+   193→  readonly description?: string;
+   194→  readonly parentId?: string;
+   195→  readonly headAccountId?: AccountId;
+   196→}
+   197→
+   198→export interface ListOrgsFilter {
+   199→  readonly type?: OrganizationType;
+   200→  readonly status?: OrgStatus;
+   201→  readonly parentId?: OrgId;
+   202→  readonly rootOnly?: boolean;
+   203→  readonly dataClassification?: DataClassification;
+   204→}
+   205→
+   206→// ---------------------------------------------------------------------------
+   207→// Org-type catalog
+   208→// ---------------------------------------------------------------------------
+   209→
+   210→export interface OrgTypeDescriptor {
+   211→  readonly type: OrganizationType;
+   212→  readonly label: string;
+   213→  readonly description: string;
+   214→  readonly defaultDataClassification: DataClassification;
+   215→}
+   216→
+   217→export const ORG_TYPES: readonly OrgTypeDescriptor[] = [
+   218→  {
+   219→    type: "hospital",
+   220→    label: "Hospital",
+   221→    description: "Healthcare facility providing clinical care to participants.",
+   222→    defaultDataClassification: "restricted",
+   223→  },
+   224→  {
+   225→    type: "clinic",
+   226→    label: "Clinic",
+   227→    description: "Outpatient care facility or community health clinic.",
+   228→    defaultDataClassification: "restricted",
+   229→  },
+   230→  {
+   231→    type: "company",
+   232→    label: "Company",
+   233→    description: "A corporate employer managing employee wellness programs.",
+   234→    defaultDataClassification: "confidential",
+   235→  },
+   236→  {
+   237→    type: "government",
+   238→    label: "Government",
+   239→    description: "Public-sector health authority or ministry of health.",
+   240→    defaultDataClassification: "restricted",
+   241→  },
+   242→  {
+   243→    type: "university",
+   244→    label: "University",
+   245→    description: "Academic institution conducting research and education.",
+   246→    defaultDataClassification: "confidential",
+   247→  },
+   248→  {
+   249→    type: "ngo",
+   250→    label: "Non-Governmental Organization",
+   251→    description: "Non-profit operating community health or relief programs.",
+   252→    defaultDataClassification: "internal",
+   253→  },
+   254→  {
+   255→    type: "insurance",
+   256→    label: "Insurance Provider",
+   257→    description: "Health insurer or payer integrating with care programs.",
+   258→    defaultDataClassification: "restricted",
+   259→  },
+   260→  {
+   261→    type: "research_institution",
+   262→    label: "Research Institution",
+   263→    description: "Research body requesting de-identified health data.",
+   264→    defaultDataClassification: "confidential",
+   265→  },
+   266→];
+   267→
+   268→export function orgTypeDescriptor(type: OrganizationType): OrgTypeDescriptor {
+   269→  const d = ORG_TYPES.find((t) => t.type === type);
+   270→  if (!d) {
+   271→    throw new IdentityError({
+   272→      code: "eks.identity.org.unknown_type",
+   273→      category: "validation",
+   274→      message: `Unknown organization type: ${type}`,
+   275→    });
+   276→  }
+   277→  return d;
+   278→}
+   279→
+   280→// ---------------------------------------------------------------------------
+   281→// Events
+   282→// ---------------------------------------------------------------------------
+   283→
+   284→export const ORG_EVENTS = {
+   285→  created: "eks.identity.org.created",
+   286→  memberAdded: "eks.identity.org.member_added",
+   287→  memberRemoved: "eks.identity.org.member_removed",
+   288→  inviteIssued: "eks.identity.org.invite_issued",
+   289→  inviteAccepted: "eks.identity.org.invite_accepted",
+   290→  teamCreated: "eks.identity.org.team_created",
+   291→  delegated: "eks.identity.org.delegated",
+   292→} as const;
+   293→
+   294→// ---------------------------------------------------------------------------
+   295→// Invite-token hashing (single-use, time-bound)
+   296→// ---------------------------------------------------------------------------
+   297→
+   298→const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+   299→
+   300→function hashToken(token: string): string {
+   301→  return createHash("sha256").update(token).digest("hex");
+   302→}
+   303→
+   304→function newInviteToken(): string {
+   305→  // 32 raw bytes -> base64url, ~43 chars
+   306→  return randomBytes(32).toString("base64url");
+   307→}
+   308→
+   309→// ---------------------------------------------------------------------------
+   310→// Manager
+   311→// ---------------------------------------------------------------------------
+   312→
+   313→const MAX_HIERARCHY_DEPTH = 16;
+   314→
+   315→export class OrganizationManager {
+   316→  private readonly orgs = new Map<OrgId, Organization>();
+   317→  private readonly bySlug = new Map<string, OrgId>();
+   318→  private readonly childrenIndex = new Map<OrgId, OrgId[]>();
+   319→  private readonly memberships = new Map<AccountId, OrgMembership[]>();
+   320→  private readonly membersByOrg = new Map<OrgId, AccountId[]>();
+   321→  private readonly invites = new Map<string, OrgInvitation>(); // keyed by tokenHash
+   322→  private readonly teams = new Map<TeamId, Team>();
+   323→  private readonly teamsByOrg = new Map<OrgId, TeamId[]>();
+   324→  private readonly departments = new Map<string, Department>();
+   325→  private readonly departmentsByOrg = new Map<OrgId, string[]>();
+   326→  private readonly delegations = new Map<OrgId, DelegatedScope[]>();
+   327→  private readonly audit = new Map<OrgId, OrgAuditEntry[]>();
+   328→
+   329→  // ------------------------------------------------------------------ create
+   330→
+   331→  create(input: CreateOrganizationInput): Organization {
+   332→    const descriptor = orgTypeDescriptor(input.type);
+   333→    const slug = (input.slug ?? slugify(input.name)).toLowerCase();
+   334→    if (!slug) {
+   335→      throw new IdentityError({
+   336→        code: "eks.identity.org.invalid_slug",
+   337→        category: "validation",
+   338→        message: "Organization slug cannot be empty.",
+   339→        userMessage: "Organization slug cannot be empty.",
+   340→      });
+   341→    }
+   342→    if (this.bySlug.has(slug)) {
+   343→      throw new IdentityError({
+   344→        code: "eks.identity.org.slug_taken",
+   345→        category: "conflict",
+   346→        message: `Slug '${slug}' already in use.`,
+   347→        userMessage: "This organization URL slug is already taken.",
+   348→      });
+   349→    }
+   350→    if (input.parentId) {
+   351→      const parent = this.orgs.get(input.parentId);
+   352→      if (!parent) {
+   353→        throw new IdentityError({
+   354→          code: "eks.identity.org.parent_not_found",
+   355→          category: "not_found",
+   356→          message: `Parent org ${input.parentId} does not exist.`,
+   357→        });
+   358→      }
+   359→      if (parent.status !== "active") {
+   360→        throw new IdentityError({
+   361→          code: "eks.identity.org.parent_inactive",
+   362→          category: "policy_violation",
+   363→          message: `Parent org ${input.parentId} is not active.`,
+   364→          userMessage: "The parent organization is not active.",
+   365→        });
+   366→      }
+   367→    }
+   368→    const now = getClock().iso();
+   369→    const org: Organization = {
+   370→      id: asOrgId(generateId("org_")),
+   371→      type: input.type,
+   372→      name: input.name,
+   373→      slug,
+   374→      description: input.description,
+   375→      parentId: input.parentId,
+   376→      dataClassification: input.dataClassification ?? descriptor.defaultDataClassification,
+   377→      status: "active",
+   378→      website: input.website,
+   379→      address: input.address,
+   380→      locale: input.locale,
+   381→      metadata: input.metadata,
+   382→      createdAt: now,
+   383→      updatedAt: now,
+   384→      createdBy: input.createdBy,
+   385→    };
+   386→    this.orgs.set(org.id, org);
+   387→    this.bySlug.set(slug, org.id);
+   388→    if (input.parentId) {
+   389→      this.attachChild(input.parentId, org.id);
+   390→    }
+   391→    this.recordAudit(org.id, "created", input.createdBy, undefined, { type: org.type, name: org.name });
+   392→
+   393→    void getEventBus().publish(
+   394→      buildEvent(
+   395→        ORG_EVENTS.created,
+   396→        { orgId: org.id, type: org.type, name: org.name, slug, parentId: org.parentId },
+   397→        {},
+   398→        "domain",
+   399→      ),
+   400→    );
+   401→    return org;
+   402→  }
+   403→
+   404→  get(id: OrgId): Organization | undefined {
+   405→    return this.orgs.get(id);
+   406→  }
+   407→
+   408→  getBySlug(slug: string): Organization | undefined {
+   409→    const id = this.bySlug.get(slug.toLowerCase());
+   410→    return id ? this.orgs.get(id) : undefined;
+   411→  }
+   412→
+   413→  list(filter?: ListOrgsFilter): Organization[] {
+   414→    const all = [...this.orgs.values()];
+   415→    if (!filter) return all;
+   416→    return all.filter((o) => {
+   417→      if (filter.type && o.type !== filter.type) return false;
+   418→      if (filter.status && o.status !== filter.status) return false;
+   419→      if (filter.parentId && o.parentId !== filter.parentId) return false;
+   420→      if (filter.rootOnly && o.parentId !== undefined) return false;
+   421→      if (filter.dataClassification && o.dataClassification !== filter.dataClassification) return false;
+   422→      return true;
+   423→    });
+   424→  }
+   425→
+   426→  // --------------------------------------------------------------- membership
+   427→
+   428→  addMember(orgId: OrgId, accountId: AccountId, role: OrgRole, opts?: { title?: string; departmentId?: string; addedBy?: AccountId }): OrgMembership {
+   429→    const org = this.requireOrg(orgId);
+   430→    this.requireActive(org);
+   431→    const existing = (this.memberships.get(accountId) ?? []).find((m) => m.orgId === orgId && m.active);
+   432→    if (existing) {
+   433→      throw new IdentityError({
+   434→        code: "eks.identity.org.already_member",
+   435→        category: "conflict",
+   436→        message: `Account ${accountId} is already a member of ${orgId}.`,
+   437→        userMessage: "This account is already a member of the organization.",
+   438→      });
+   439→    }
+   440→    if (role === "owner") {
+   441→      // Only one active owner per org
+   442→      const owners = (this.membersByOrg.get(orgId) ?? [])
+   443→        .map((id) => (this.memberships.get(id) ?? []).find((m) => m.orgId === orgId && m.active && m.role === "owner"))
+   444→        .filter((m): m is OrgMembership => !!m);
+   445→      if (owners.length > 0) {
+   446→        throw new IdentityError({
+   447→          code: "eks.identity.org.owner_exists",
+   448→          category: "conflict",
+   449→          message: `Org ${orgId} already has an owner.`,
+   450→          userMessage: "An organization can have only one owner.",
+   451→        });
+   452→      }
+   453→    }
+   454→    const now = getClock().iso();
+   455→    const membership: OrgMembership = {
+   456→      orgId,
+   457→      accountId,
+   458→      role,
+   459→      title: opts?.title,
+   460→      departmentId: opts?.departmentId,
+   461→      addedAt: now,
+   462→      addedBy: opts?.addedBy,
+   463→      active: true,
+   464→    };
+   465→    const list = this.memberships.get(accountId) ?? [];
+   466→    list.push(membership);
+   467→    this.memberships.set(accountId, list);
+   468→    const memberList = this.membersByOrg.get(orgId) ?? [];
+   469→    memberList.push(accountId);
+   470→    this.membersByOrg.set(orgId, memberList);
+   471→    this.recordAudit(orgId, "member_added", opts?.addedBy, undefined, { accountId, role });
+   472→    void getEventBus().publish(
+   473→      buildEvent(ORG_EVENTS.memberAdded, { orgId, accountId, role }, {}, "domain"),
+   474→    );
+   475→    return membership;
+   476→  }
+   477→
+   478→  removeMember(orgId: OrgId, accountId: AccountId, removedBy?: AccountId, reason?: string): void {
+   479→    this.requireOrg(orgId);
+   480→    const list = this.memberships.get(accountId) ?? [];
+   481→    const idx = list.findIndex((m) => m.orgId === orgId && m.active);
+   482→    if (idx < 0) {
+   483→      throw new IdentityError({
+   484→        code: "eks.identity.org.not_member",
+   485→        category: "not_found",
+   486→        message: `Account ${accountId} is not an active member of ${orgId}.`,
+   487→      });
+   488→    }
+   489→    const removed = list[idx];
+   490→    const now = getClock().iso();
+   491→    list[idx] = { ...removed, active: false, removedAt: now };
+   492→    this.memberships.set(accountId, list);
+   493→    // Prune member index
+   494→    const memberList = (this.membersByOrg.get(orgId) ?? []).filter((id) => id !== accountId);
+   495→    if (memberList.length === 0) this.membersByOrg.delete(orgId);
+   496→    else this.membersByOrg.set(orgId, memberList);
+   497→    // Remove from any teams in this org
+   498→    for (const tid of this.teamsByOrg.get(orgId) ?? []) {
+   499→      const t = this.teams.get(tid);
+   500→      if (t && t.memberAccountIds.includes(accountId)) {
+   501→        this.teams.set(tid, { ...t, memberAccountIds: t.memberAccountIds.filter((a) => a !== accountId) });
+   502→      }
+   503→    }
+   504→    this.recordAudit(orgId, "member_removed", removedBy, { role: removed.role }, { accountId, reason });
+   505→    void getEventBus().publish(
+   506→      buildEvent(ORG_EVENTS.memberRemoved, { orgId, accountId, role: removed.role, reason }, {}, "domain"),
+   507→    );
+   508→  }
+   509→
+   510→  listMembers(orgId: OrgId): OrgMembership[] {
+   511→    this.requireOrg(orgId);
+   512→    const ids = this.membersByOrg.get(orgId) ?? [];
+   513→    return ids
+   514→      .map((id) => (this.memberships.get(id) ?? []).find((m) => m.orgId === orgId && m.active))
+   515→      .filter((m): m is OrgMembership => !!m);
+   516→  }
+   517→
+   518→  listMembershipsForAccount(accountId: AccountId): OrgMembership[] {
+   519→    return (this.memberships.get(accountId) ?? []).filter((m) => m.active);
+   520→  }
+   521→
+   522→  // --------------------------------------------------------------- invitations
+   523→
+   524→  invite(orgId: OrgId, email: string, role: OrgRole, invitedBy: AccountId): string {
+   525→    const org = this.requireOrg(orgId);
+   526→    this.requireActive(org);
+   527→    const normalized = email.toLowerCase().trim();
+   528→    if (!normalized.includes("@")) {
+   529→      throw new IdentityError({
+   530→        code: "eks.identity.org.invalid_invite_email",
+   531→        category: "validation",
+   532→        message: `Invalid invite email: ${email}`,
+   533→        userMessage: "Please enter a valid email address.",
+   534→      });
+   535→    }
+   536→    const raw = newInviteToken();
+   537→    const tokenHash = hashToken(raw);
+   538→    const now = getClock().iso();
+   539→    const invitation: OrgInvitation = {
+   540→      id: generateId("inv_"),
+   541→      orgId,
+   542→      email: normalized,
+   543→      role,
+   544→      invitedBy,
+   545→      tokenHash,
+   546→      createdAt: now,
+   547→      expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+   548→      consumed: false,
+   549→    };
+   550→    this.invites.set(tokenHash, invitation);
+   551→    this.recordAudit(orgId, "invite_issued", invitedBy, undefined, { email: normalized, role });
+   552→    void getEventBus().publish(
+   553→      buildEvent(ORG_EVENTS.inviteIssued, { orgId, email: normalized, role, invitedBy, expiresAt: invitation.expiresAt }, {}, "domain"),
+   554→    );
+   555→    return raw; // returned ONCE; only the hash is stored
+   556→  }
+   557→
+   558→  /** Accept an invite by raw token. Returns the resulting membership. */
+   559→  acceptInvite(rawToken: string, accountId: AccountId): OrgMembership {
+   560→    const tokenHash = hashToken(rawToken);
+   561→    const invite = this.invites.get(tokenHash);
+   562→    if (!invite) {
+   563→      throw new IdentityError({
+   564→        code: "eks.identity.org.invite_invalid",
+   565→        category: "not_found",
+   566→        message: "Unknown invite token.",
+   567→        userMessage: "This invite link is invalid.",
+   568→      });
+   569→    }
+   570→    if (invite.revokedAt) {
+   571→      throw new IdentityError({
+   572→        code: "eks.identity.org.invite_revoked",
+   573→        category: "permission_denied",
+   574→        message: "Invite has been revoked.",
+   575→        userMessage: "This invite is no longer valid.",
+   576→      });
+   577→    }
+   578→    if (invite.consumed) {
+   579→      throw new IdentityError({
+   580→        code: "eks.identity.org.invite_consumed",
+   581→        category: "conflict",
+   582→        message: "Invite already used.",
+   583→        userMessage: "This invite has already been used.",
+   584→      });
+   585→    }
+   586→    if (new Date(invite.expiresAt).getTime() < Date.now()) {
+   587→      throw new IdentityError({
+   588→        code: "eks.identity.org.invite_expired",
+   589→        category: "permission_denied",
+   590→        message: `Invite expired at ${invite.expiresAt}.`,
+   591→        userMessage: "This invite has expired. Request a new one.",
+   592→      });
+   593→    }
+   594→    const org = this.requireOrg(invite.orgId);
+   595→    if (org.status !== "active") {
+   596→      throw new IdentityError({
+   597→        code: "eks.identity.org.not_active",
+   598→        category: "policy_violation",
+   599→        message: `Org ${invite.orgId} is not active.`,
+   600→        userMessage: "This organization is not currently active.",
+   601→      });
+   602→    }
+   603→    // Consume the token (single-use)
+   604→    const now = getClock().iso();
+   605→    this.invites.set(tokenHash, { ...invite, consumed: true, consumedAt: now, consumedBy: accountId });
+   606→    this.recordAudit(invite.orgId, "invite_accepted", accountId, { email: invite.email }, { role: invite.role });
+   607→    void getEventBus().publish(
+   608→      buildEvent(ORG_EVENTS.inviteAccepted, { orgId: invite.orgId, accountId, role: invite.role, email: invite.email }, {}, "domain"),
+   609→    );
+   610→    return this.addMember(invite.orgId, accountId, invite.role, { addedBy: invite.invitedBy });
+   611→  }
+   612→
+   613→  listInvites(orgId: OrgId): OrgInvitation[] {
+   614→    this.requireOrg(orgId);
+   615→    return [...this.invites.values()].filter((i) => i.orgId === orgId);
+   616→  }
+   617→
+   618→  revokeInvite(orgId: OrgId, inviteId: string, revokedBy?: AccountId): void {
+   619→    this.requireOrg(orgId);
+   620→    for (const [hash, inv] of this.invites) {
+   621→      if (inv.id === inviteId && inv.orgId === orgId) {
+   622→        if (inv.consumed) {
+   623→          throw new IdentityError({
+   624→            code: "eks.identity.org.invite_already_consumed",
+   625→            category: "conflict",
+   626→            message: "Cannot revoke a consumed invite.",
+   627→          });
+   628→        }
+   629→        this.invites.set(hash, { ...inv, revokedAt: getClock().iso() });
+   630→        this.recordAudit(orgId, "invite_revoked", revokedBy, { email: inv.email }, undefined);
+   631→        return;
+   632→      }
+   633→    }
+   634→    throw new IdentityError({
+   635→      code: "eks.identity.org.invite_not_found",
+   636→      category: "not_found",
+   637→      message: `Invite ${inviteId} not found in org ${orgId}.`,
+   638→    });
+   639→  }
+   640→
+   641→  // --------------------------------------------------------------- teams
+   642→
+   643→  createTeam(orgId: OrgId, input: CreateTeamInput): Team {
+   644→    const org = this.requireOrg(orgId);
+   645→    this.requireActive(org);
+   646→    if (!input.name?.trim()) {
+   647→      throw new IdentityError({
+   648→        code: "eks.identity.org.team_name_required",
+   649→        category: "validation",
+   650→        message: "Team name is required.",
+   651→      });
+   652→    }
+   653→    if (input.departmentId) {
+   654→      const dept = this.departments.get(input.departmentId);
+   655→      if (!dept || dept.orgId !== orgId) {
+   656→        throw new IdentityError({
+   657→          code: "eks.identity.org.department_not_found",
+   658→          category: "not_found",
+   659→          message: `Department ${input.departmentId} not found in org ${orgId}.`,
+   660→        });
+   661→      }
+   662→    }
+   663→    const team: Team = {
+   664→      id: asTeamId(generateId("team_")),
+   665→      orgId,
+   666→      name: input.name,
+   667→      description: input.description,
+   668→      departmentId: input.departmentId,
+   669→      memberAccountIds: [],
+   670→      createdAt: getClock().iso(),
+   671→      createdBy: input.createdBy,
+   672→    };
+   673→    this.teams.set(team.id, team);
+   674→    const list = this.teamsByOrg.get(orgId) ?? [];
+   675→    list.push(team.id);
+   676→    this.teamsByOrg.set(orgId, list);
+   677→    this.recordAudit(orgId, "team_created", input.createdBy, undefined, { teamId: team.id, name: team.name });
+   678→    void getEventBus().publish(
+   679→      buildEvent(ORG_EVENTS.teamCreated, { orgId, teamId: team.id, name: team.name }, {}, "domain"),
+   680→    );
+   681→    return team;
+   682→  }
+   683→
+   684→  getTeam(teamId: TeamId): Team | undefined {
+   685→    return this.teams.get(teamId);
+   686→  }
+   687→
+   688→  listTeams(orgId: OrgId): Team[] {
+   689→    this.requireOrg(orgId);
+   690→    return (this.teamsByOrg.get(orgId) ?? []).map((id) => this.teams.get(id)!).filter(Boolean);
+   691→  }
+   692→
+   693→  addTeamMember(teamId: TeamId, accountId: AccountId): Team {
+   694→    const team = this.teams.get(teamId);
+   695→    if (!team) {
+   696→      throw new IdentityError({
+   697→        code: "eks.identity.org.team_not_found",
+   698→        category: "not_found",
+   699→        message: `Team ${teamId} not found.`,
+   700→      });
+   701→    }
+   702→    // Membership check: must be a member of the org to join a team
+   703→    const isMember = (this.memberships.get(accountId) ?? []).some((m) => m.orgId === team.orgId && m.active);
+   704→    if (!isMember) {
+   705→      throw new IdentityError({
+   706→        code: "eks.identity.org.not_org_member",
+   707→        category: "permission_denied",
+   708→        message: `Account ${accountId} is not a member of org ${team.orgId}.`,
+   709→        userMessage: "Only organization members can join teams.",
+   710→      });
+   711→    }
+   712→    if (!team.memberAccountIds.includes(accountId)) {
+   713→      this.teams.set(teamId, {
+   714→        ...team,
+   715→        memberAccountIds: [...team.memberAccountIds, accountId],
+   716→      });
+   717→    }
+   718→    return this.teams.get(teamId)!;
+   719→  }
+   720→
+   721→  removeTeamMember(teamId: TeamId, accountId: AccountId): Team {
+   722→    const team = this.teams.get(teamId);
+   723→    if (!team) {
+   724→      throw new IdentityError({
+   725→        code: "eks.identity.org.team_not_found",
+   726→        category: "not_found",
+   727→        message: `Team ${teamId} not found.`,
+   728→      });
+   729→    }
+   730→    this.teams.set(teamId, {
+   731→      ...team,
+   732→      memberAccountIds: team.memberAccountIds.filter((a) => a !== accountId),
+   733→    });
+   734→    return this.teams.get(teamId)!;
+   735→  }
+   736→
+   737→  // --------------------------------------------------------------- departments
+   738→
+   739→  createDepartment(orgId: OrgId, input: CreateDepartmentInput): Department {
+   740→    const org = this.requireOrg(orgId);
+   741→    this.requireActive(org);
+   742→    if (!input.name?.trim()) {
+   743→      throw new IdentityError({
+   744→        code: "eks.identity.org.dept_name_required",
+   745→        category: "validation",
+   746→        message: "Department name is required.",
+   747→      });
+   748→    }
+   749→    if (input.parentId) {
+   750→      const parent = this.departments.get(input.parentId);
+   751→      if (!parent || parent.orgId !== orgId) {
+   752→        throw new IdentityError({
+   753→          code: "eks.identity.org.parent_dept_not_found",
+   754→          category: "not_found",
+   755→          message: `Parent department ${input.parentId} not found in org ${orgId}.`,
+   756→        });
+   757→      }
+   758→    }
+   759→    const dept: Department = {
+   760→      id: generateId("dept_"),
+   761→      orgId,
+   762→      name: input.name,
+   763→      description: input.description,
+   764→      parentId: input.parentId,
+   765→      headAccountId: input.headAccountId,
+   766→      createdAt: getClock().iso(),
+   767→    };
+   768→    this.departments.set(dept.id, dept);
+   769→    const list = this.departmentsByOrg.get(orgId) ?? [];
+   770→    list.push(dept.id);
+   771→    this.departmentsByOrg.set(orgId, list);
+   772→    this.recordAudit(orgId, "department_created", undefined, undefined, { departmentId: dept.id, name: dept.name });
+   773→    return dept;
+   774→  }
+   775→
+   776→  listDepartments(orgId: OrgId): Department[] {
+   777→    this.requireOrg(orgId);
+   778→    return (this.departmentsByOrg.get(orgId) ?? []).map((id) => this.departments.get(id)!).filter(Boolean);
+   779→  }
+   780→
+   781→  // --------------------------------------------------------------- hierarchy
+   782→
+   783→  setParent(orgId: OrgId, parentId: OrgId): Organization {
+   784→    const org = this.requireOrg(orgId);
+   785→    if (orgId === parentId) {
+   786→      throw new IdentityError({
+   787→        code: "eks.identity.org.self_parent",
+   788→        category: "validation",
+   789→        message: "An organization cannot be its own parent.",
+   790→      });
+   791→    }
+   792→    const parent = this.orgs.get(parentId);
+   793→    if (!parent) {
+   794→      throw new IdentityError({
+   795→        code: "eks.identity.org.parent_not_found",
+   796→        category: "not_found",
+   797→        message: `Parent org ${parentId} does not exist.`,
+   798→      });
+   799→    }
+   800→    if (parent.status !== "active") {
+   801→      throw new IdentityError({
+   802→        code: "eks.identity.org.parent_inactive",
+   803→        category: "policy_violation",
+   804→        message: `Parent org ${parentId} is not active.`,
+   805→      });
+   806→    }
+   807→    // Cycle detection: walk up parent chain from `parentId`; if we encounter
+   808→    // `orgId`, attaching would create a cycle. Also enforce a depth cap.
+   809→    let cursor: OrgId | undefined = parentId;
+   810→    const visited = new Set<string>();
+   811→    let depth = 0;
+   812→    while (cursor) {
+   813→      if (cursor === orgId) {
+   814→        throw new IdentityError({
+   815→          code: "eks.identity.org.circular_hierarchy",
+   816→          category: "validation",
+   817→          message: `Setting ${orgId}'s parent to ${parentId} would create a cycle.`,
+   818→          userMessage: "This parent assignment would create a circular hierarchy.",
+   819→        });
+   820→      }
+   821→      if (visited.has(cursor as string)) break; // defensive: pre-existing cycle
+   822→      visited.add(cursor as string);
+   823→      depth++;
+   824→      if (depth > MAX_HIERARCHY_DEPTH) {
+   825→        throw new IdentityError({
+   826→          code: "eks.identity.org.hierarchy_too_deep",
+   827→          category: "validation",
+   828→          message: `Hierarchy exceeds max depth of ${MAX_HIERARCHY_DEPTH}.`,
+   829→        });
+   830→      }
+   831→      cursor = this.orgs.get(cursor)?.parentId;
+   832→    }
+   833→    const oldParent = org.parentId;
+   834→    if (oldParent) this.detachChild(oldParent, orgId);
+   835→    this.attachChild(parentId, orgId);
+   836→    const updated: Organization = { ...org, parentId, updatedAt: getClock().iso() };
+   837→    this.orgs.set(orgId, updated);
+   838→    this.recordAudit(orgId, "set_parent", undefined, { parentId: oldParent }, { parentId });
+   839→    return updated;
+   840→  }
+   841→
+   842→  getHierarchy(orgId: OrgId): OrgNode {
+   843→    this.requireOrg(orgId);
+   844→    return this.buildNode(orgId, 0, new Set<string>());
+   845→  }
+   846→
+   847→  private buildNode(orgId: OrgId, depth: number, visited: Set<string>): OrgNode {
+   848→    const org = this.orgs.get(orgId);
+   849→    if (!org) {
+   850→      throw new IdentityError({
+   851→        code: "eks.identity.org.not_found",
+   852→        category: "not_found",
+   853→        message: `Org ${orgId} not found.`,
+   854→      });
+   855→    }
+   856→    if (visited.has(orgId as string)) {
+   857→      // Defensive: cycle in stored data; stop descent
+   858→      return { org, children: [], depth };
+   859→    }
+   860→    visited.add(orgId as string);
+   861→    const childIds = this.childrenIndex.get(orgId) ?? [];
+   862→    return {
+   863→      org,
+   864→      depth,
+   865→      children: childIds.map((cid) => this.buildNode(cid, depth + 1, visited)),
+   866→    };
+   867→  }
+   868→
+   869→  private attachChild(parentId: OrgId, childId: OrgId): void {
+   870→    const list = this.childrenIndex.get(parentId) ?? [];
+   871→    if (!list.includes(childId)) list.push(childId);
+   872→    this.childrenIndex.set(parentId, list);
+   873→  }
+   874→
+   875→  private detachChild(parentId: OrgId, childId: OrgId): void {
+   876→    const list = this.childrenIndex.get(parentId);
+   877→    if (!list) return;
+   878→    const next = list.filter((id) => id !== childId);
+   879→    if (next.length === 0) this.childrenIndex.delete(parentId);
+   880→    else this.childrenIndex.set(parentId, next);
+   881→  }
+   882→
+   883→  // --------------------------------------------------------------- delegation
+   884→
+   885→  delegate(
+   886→    orgId: OrgId,
+   887→    delegateAccountId: AccountId,
+   888→    scope: DelegatedScopeKind,
+   889→    createdBy: AccountId,
+   890→    opts?: { permissions?: string[]; validUntil?: string },
+   891→  ): DelegatedScope {
+   892→    const org = this.requireOrg(orgId);
+   893→    this.requireActive(org);
+   894→    // Delegate must be an admin or owner of the org
+   895→    const membership = (this.memberships.get(delegateAccountId) ?? []).find((m) => m.orgId === orgId && m.active);
+   896→    if (!membership) {
+   897→      throw new IdentityError({
+   898→        code: "eks.identity.org.delegate_not_member",
+   899→        category: "permission_denied",
+   900→        message: `Delegate ${delegateAccountId} is not a member of org ${orgId}.`,
+   901→      });
+   902→    }
+   903→    if (membership.role !== "admin" && membership.role !== "owner") {
+   904→      throw new IdentityError({
+   905→        code: "eks.identity.org.delegate_insufficient_role",
+   906→        category: "permission_denied",
+   907→        message: `Delegate must be admin or owner (got ${membership.role}).`,
+   908→        userMessage: "Only admins or owners can receive delegated authority.",
+   909→      });
+   910→    }
+   911→    const delegation: DelegatedScope = {
+   912→      id: generateId("dlg_"),
+   913→      orgId,
+   914→      delegateAccountId,
+   915→      scope,
+   916→      permissions: opts?.permissions ?? [],
+   917→      validUntil: opts?.validUntil,
+   918→      createdAt: getClock().iso(),
+   919→      createdBy,
+   920→    };
+   921→    const list = this.delegations.get(orgId) ?? [];
+   922→    list.push(delegation);
+   923→    this.delegations.set(orgId, list);
+   924→    // Promote member role to "delegate" if not already an owner
+   925→    // (after the guard above, membership.role is "admin" or "owner").
+   926→    if (membership.role !== "owner") {
+   927→      const acctList = this.memberships.get(delegateAccountId) ?? [];
+   928→      const idx = acctList.findIndex((m) => m.orgId === orgId && m.active);
+   929→      if (idx >= 0) {
+   930→        acctList[idx] = { ...acctList[idx], role: "delegate" };
+   931→        this.memberships.set(delegateAccountId, acctList);
+   932→      }
+   933→    }
+   934→    this.recordAudit(orgId, "delegated", createdBy, undefined, { delegateAccountId, scope, permissions: delegation.permissions });
+   935→    void getEventBus().publish(
+   936→      buildEvent(ORG_EVENTS.delegated, { orgId, delegateAccountId, scope, delegationId: delegation.id }, {}, "domain"),
+   937→    );
+   938→    return delegation;
+   939→  }
+   940→
+   941→  listDelegations(orgId: OrgId): DelegatedScope[] {
+   942→    this.requireOrg(orgId);
+   943→    return (this.delegations.get(orgId) ?? []).filter((d) => !d.revokedAt);
+   944→  }
+   945→
+   946→  revokeDelegation(orgId: OrgId, delegationId: string, revokedBy?: AccountId): void {
+   947→    const list = this.delegations.get(orgId) ?? [];
+   948→    const idx = list.findIndex((d) => d.id === delegationId);
+   949→    if (idx < 0) {
+   950→      throw new IdentityError({
+   951→        code: "eks.identity.org.delegation_not_found",
+   952→        category: "not_found",
+   953→        message: `Delegation ${delegationId} not found in org ${orgId}.`,
+   954→      });
+   955→    }
+   956→    list[idx] = { ...list[idx], revokedAt: getClock().iso() };
+   957→    this.delegations.set(orgId, list);
+   958→    this.recordAudit(orgId, "delegation_revoked", revokedBy, undefined, { delegationId });
+   959→  }
+   960→
+   961→  // --------------------------------------------------------------- lifecycle
+   962→
+   963→  suspend(orgId: OrgId, reason?: string, suspendedBy?: AccountId): Organization {
+   964→    const org = this.requireOrg(orgId);
+   965→    if (org.status === "terminated") {
+   966→      throw new IdentityError({
+   967→        code: "eks.identity.org.terminated",
+   968→        category: "policy_violation",
+   969→        message: `Org ${orgId} is terminated and cannot be suspended.`,
+   970→      });
+   971→    }
+   972→    const now = getClock().iso();
+   973→    const updated: Organization = {
+   974→      ...org,
+   975→      status: "suspended",
+   976→      suspendedAt: now,
+   977→      suspendedReason: reason,
+   978→      updatedAt: now,
+   979→    };
+   980→    this.orgs.set(orgId, updated);
+   981→    this.recordAudit(orgId, "suspended", suspendedBy, { status: org.status }, { status: "suspended", reason });
+   982→    return updated;
+   983→  }
+   984→
+   985→  reactivate(orgId: OrgId, reactivatedBy?: AccountId): Organization {
+   986→    const org = this.requireOrg(orgId);
+   987→    if (org.status === "terminated") {
+   988→      throw new IdentityError({
+   989→        code: "eks.identity.org.terminated",
+   990→        category: "policy_violation",
+   991→        message: `Org ${orgId} is terminated and cannot be reactivated.`,
+   992→      });
+   993→    }
+   994→    const now = getClock().iso();
+   995→    const updated: Organization = {
+   996→      ...org,
+   997→      status: "active",
+   998→      suspendedAt: undefined,
+   999→      suspendedReason: undefined,
+  1000→      updatedAt: now,
+  1001→    };
+  1002→    this.orgs.set(orgId, updated);
+  1003→    this.recordAudit(orgId, "reactivated", reactivatedBy, { status: org.status }, { status: "active" });
+  1004→    return updated;
+  1005→  }
+  1006→
+  1007→  terminate(orgId: OrgId, terminatedBy?: AccountId, reason?: string): Organization {
+  1008→    const org = this.requireOrg(orgId);
+  1009→    const now = getClock().iso();
+  1010→    const updated: Organization = {
+  1011→      ...org,
+  1012→      status: "terminated",
+  1013→      terminatedAt: now,
+  1014→      updatedAt: now,
+  1015→      metadata: { ...(org.metadata ?? {}), terminationReason: reason },
+  1016→    };
+  1017→    this.orgs.set(orgId, updated);
+  1018→    // Revoke all open invites
+  1019→    for (const [hash, inv] of this.invites) {
+  1020→      if (inv.orgId === orgId && !inv.consumed && !inv.revokedAt) {
+  1021→        this.invites.set(hash, { ...inv, revokedAt: now });
+  1022→      }
+  1023→    }
+  1024→    // Revoke all delegations
+  1025→    const dels = this.delegations.get(orgId) ?? [];
+  1026→    for (let i = 0; i < dels.length; i++) {
+  1027→      if (!dels[i].revokedAt) dels[i] = { ...dels[i], revokedAt: now };
+  1028→    }
+  1029→    this.delegations.set(orgId, dels);
+  1030→    this.recordAudit(orgId, "terminated", terminatedBy, { status: org.status }, { status: "terminated", reason });
+  1031→    return updated;
+  1032→  }
+  1033→
+  1034→  // --------------------------------------------------------------- audit
+  1035→
+  1036→  getAudit(orgId: OrgId): OrgAuditEntry[] {
+  1037→    this.requireOrg(orgId);
+  1038→    return [...(this.audit.get(orgId) ?? [])];
+  1039→  }
+  1040→
+  1041→  private recordAudit(
+  1042→    orgId: OrgId,
+  1043→    action: string,
+  1044→    actor: AccountId | undefined,
+  1045→    before?: Record<string, unknown>,
+  1046→    after?: Record<string, unknown>,
+  1047→  ): void {
+  1048→    const list = this.audit.get(orgId) ?? [];
+  1049→    const entry: OrgAuditEntry = {
+  1050→      id: generateId("aud_"),
+  1051→      orgId,
+  1052→      action,
+  1053→      actor,
+  1054→      at: getClock().iso(),
+  1055→      before,
+  1056→      after,
+  1057→    };
+  1058→    list.push(entry);
+  1059→    this.audit.set(orgId, list);
+  1060→  }
+  1061→
+  1062→  // --------------------------------------------------------------- internals
+  1063→
+  1064→  private requireOrg(orgId: OrgId): Organization {
+  1065→    const org = this.orgs.get(orgId);
+  1066→    if (!org) {
+  1067→      throw new IdentityError({
+  1068→        code: "eks.identity.org.not_found",
+  1069→        category: "not_found",
+  1070→        message: `Organization ${orgId} not found.`,
+  1071→        userMessage: "Organization not found.",
+  1072→      });
+  1073→    }
+  1074→    return org;
+  1075→  }
+  1076→
+  1077→  private requireActive(org: Organization): void {
+  1078→    if (org.status !== "active") {
+  1079→      throw new IdentityError({
+  1080→        code: "eks.identity.org.not_active",
+  1081→        category: "policy_violation",
+  1082→        message: `Org ${org.id} is ${org.status}, not active.`,
+  1083→        userMessage: "This organization is not currently active.",
+  1084→      });
+  1085→    }
+  1086→  }
+  1087→}
+  1088→
+  1089→// ---------------------------------------------------------------------------
+  1090→// Helpers
+  1091→// ---------------------------------------------------------------------------
+  1092→
+  1093→function slugify(name: string): string {
+  1094→  return name
+  1095→    .toLowerCase()
+  1096→    .trim()
+  1097→    .replace(/[^a-z0-9]+/g, "-")
+  1098→    .replace(/^-+|-+$/g, "");
+  1099→}
+  1100→
+  1101→// ---------------------------------------------------------------------------
+  1102→// Singleton
+  1103→// ---------------------------------------------------------------------------
+  1104→
+  1105→let _mgr: OrganizationManager | null = null;
+  1106→export function getOrganizations(): OrganizationManager {
+  1107→  if (!_mgr) _mgr = new OrganizationManager();
+  1108→  return _mgr;
+  1109→}
+  1110→export function resetOrganizations(): void {
+  1111→  _mgr = null;
+  1112→}
+  1113→
