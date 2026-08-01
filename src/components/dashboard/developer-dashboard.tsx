@@ -621,7 +621,7 @@ function MyProgramsCard({
                     variant="ghost"
                     className="h-7 text-xs ml-auto"
                   >
-                    <Link href={`/programs/${encodeURIComponent(p.id)}`}>
+                    <Link href={`/programs/${encodeURIComponent(p.slug)}`}>
                       View Details <ArrowRight className="h-3 w-3 ml-1" />
                     </Link>
                   </Button>

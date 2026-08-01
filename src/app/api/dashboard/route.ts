@@ -9,13 +9,14 @@ import {
   getResearchConsent, getPopulationAnalytics,
   getAccounts,
 } from "@/lib/platform-server";
-import { getSession, getWaitlist } from "@/lib/auth";
+import { getSession, getWaitlist, ensureDemoAccounts } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
   ensurePlatform();
   await ensureHydrated();
+  await ensureDemoAccounts();
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ ok: false, error: { message: "Not authenticated" } }, { status: 401 });

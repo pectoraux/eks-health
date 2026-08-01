@@ -1,0 +1,155 @@
+Eks-Health live verification — 2026-08-01T04:33:52Z
+Target: https://eks-health.vercel.app
+
+================================================================
+PHASE 1 — Sign-in + dashboard render for 6 demo accounts
+================================================================
+
+----------------------------------------------------------------
+ROLE: Participant (ama@eks.health)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"ama@eks.health\",\"persona\":\"participant\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uy7gtabbtl8k4n59sr4zm\\\",\\\"email\\\":\\\"ama@eks.health\\\",\\\"displayName\\\":\\\"Ama Serwaa\\\",\\\"activePersona\\\":\\\"participant\\\",\\\"personas\\\":[\\\"participan\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"participant\\\",\\\"displayName\\\":\\\"Ama Serwaa\\\",\\\"email\\\":\\\"ama@eks.health\\\",\\\"missions\\\":{\\\"stats\\\":{\\\"total\\\":4,\\\"active\\\":4,\\\"completed\\\":0,\\\"skipped\\\":0,\\\"expi\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/sign-in
+  UI /dashboard body: "{\"len\":15613,\"missions\":false,\"habits\":false,\"welcome\":false}"
+
+----------------------------------------------------------------
+ROLE: Technician (clinic@eks.health)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"clinic@eks.health\",\"persona\":\"health_technician\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uy7ijj27mvxjnx1wynq9s\\\",\\\"email\\\":\\\"clinic@eks.health\\\",\\\"displayName\\\":\\\"Dr. Adwoa Boateng\\\",\\\"activePersona\\\":\\\"health_technician\\\",\\\"person\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"health_technician\\\",\\\"displayName\\\":\\\"Dr. Adwoa Boateng\\\",\\\"email\\\":\\\"clinic@eks.health\\\",\\\"technicians\\\":{\\\"stats\\\":{\\\"total\\\":3,\\\"active\\\":3,\\\"suspended\\\":\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/dashboard
+  UI /dashboard body: "{\"len\":15298,\"missions\":false,\"habits\":false,\"welcome\":true}"
+
+----------------------------------------------------------------
+ROLE: Developer (kwame@eks.health)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"kwame@eks.health\",\"persona\":\"developer\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uxbl9wki8v3l5ymjq8rlo\\\",\\\"email\\\":\\\"kwame@eks.health\\\",\\\"displayName\\\":\\\"Kwame Mensah\\\",\\\"activePersona\\\":\\\"developer\\\",\\\"personas\\\":[\\\"develope\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"developer\\\",\\\"displayName\\\":\\\"Kwame Mensah\\\",\\\"email\\\":\\\"kwame@eks.health\\\",\\\"developer\\\":{\\\"profiles\\\":[{\\\"id\\\":\\\"dev_0ms9uwncseemo82zswkvaokos\\\",\\\"name\\\":\\\"\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/dashboard
+  UI /dashboard body: "{\"len\":15276,\"missions\":false,\"habits\":false,\"welcome\":true}"
+
+----------------------------------------------------------------
+ROLE: Researcher (research@eks.health)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"research@eks.health\",\"persona\":\"researcher\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uxbmypmgosxzalmmf40l0\\\",\\\"email\\\":\\\"research@eks.health\\\",\\\"displayName\\\":\\\"Prof. Yaw Asante\\\",\\\"activePersona\\\":\\\"researcher\\\",\\\"personas\\\":[\\\"\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"researcher\\\",\\\"displayName\\\":\\\"Prof. Yaw Asante\\\",\\\"email\\\":\\\"research@eks.health\\\",\\\"research\\\":{\\\"consentStats\\\":{\\\"total\\\":3,\\\"active\\\":3,\\\"revoked\\\":0,\\\"e\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/sign-in
+  UI /dashboard body: "{\"len\":15613,\"missions\":false,\"habits\":false,\"welcome\":false}"
+
+----------------------------------------------------------------
+ROLE: Org Admin (admin@eks.health)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"admin@eks.health\",\"persona\":\"org_admin\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uxbonilo76oezbync737p\\\",\\\"email\\\":\\\"admin@eks.health\\\",\\\"displayName\\\":\\\"Org Administrator\\\",\\\"activePersona\\\":\\\"org_admin\\\",\\\"personas\\\":[\\\"org\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"org_admin\\\",\\\"displayName\\\":\\\"Org Administrator\\\",\\\"email\\\":\\\"admin@eks.health\\\",\\\"population\\\":{\\\"stats\\\":{\\\"totalQueries\\\":4,\\\"byMethod\\\":{\\\"getStats\\\":4}}\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/sign-in
+  UI /dashboard body: "{\"len\":15613,\"missions\":false,\"habits\":false,\"welcome\":false}"
+
+----------------------------------------------------------------
+ROLE: Platform Admin (ekontetevi@gmail.com)
+----------------------------------------------------------------
+  UI sign-in: URL after click = https://eks-health.vercel.app/dashboard
+  API /api/auth/sign-in: "{\"status\":200,\"ok\":true,\"email\":\"ekontetevi@gmail.com\",\"persona\":\"platform_admin\"}"
+  API /api/auth/session: "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"accountId\\\":\\\"acc_0ms9uxbg5iwktkeiamn36cbr2\\\",\\\"email\\\":\\\"ekontetevi@gmail.com\\\",\\\"displayName\\\":\\\"Platform Administrator\\\",\\\"activePersona\\\":\\\"platform_admin\\\",\\\"p\"}"
+  API /api/dashboard:    "{\"status\":200,\"ok\":true,\"snippet\":\"{\\\"persona\\\":\\\"platform_admin\\\",\\\"displayName\\\":\\\"Platform Administrator\\\",\\\"email\\\":\\\"ekontetevi@gmail.com\\\",\\\"platform\\\":{\\\"accounts\\\":[],\\\"waitlist\\\":[]},\\\"marketplac\"}"
+  UI /dashboard URL: https://eks-health.vercel.app/sign-in
+  UI /dashboard body: "{\"len\":15613,\"missions\":false,\"habits\":false,\"welcome\":false}"
+
+----------------------------------------------------------------
+PHASE 1 SUMMARY
+----------------------------------------------------------------
+  PARTIAL|Participant|session OK but dashboard body empty
+  PARTIAL|Technician|session OK but dashboard body empty
+  PARTIAL|Developer|session OK but dashboard body empty
+  PARTIAL|Researcher|session OK but dashboard body empty
+  PARTIAL|Org Admin|session OK but dashboard body empty
+  PARTIAL|Platform Admin|session OK but dashboard body empty
+
+----------------------------------------------------------------
+PHASE 2 — Participant action APIs (direct fetch)
+----------------------------------------------------------------
+  Signed in as Participant
+
+  [2a] Complete a mission
+    active mission: "{\"id\":\"mis_0ms9uwn9axtt1foaf1vc7bt1l\",\"title\":\"Walk 8,200 steps today\"}"
+    POST /api/missions/complete: 
+
+  [2b] Habit +check-in
+    first habit: "{\"id\":\"hab_0ms9uwn9biw12u0g4c1ulcn5e\",\"name\":\"Morning Meditation\"}"
+    POST /api/missions/habits: 
+
+  [2c] Record measurement (dialog flow)
+    schemas[0]: "{\"id\":\"sch_0ms9uwn8pyblma7qw0m5s18bz\",\"name\":\"Resting Heart Rate\"}"
+    sources[0]: "{\"id\":\"src_0ms9uwn8pdgn2ayu6nv4z375b\",\"label\":\"Demo Smartwatch\"}"
+    POST /api/health/measurements: 
+
+----------------------------------------------------------------
+PHASE 3 — Marketplace (public)
+----------------------------------------------------------------
+  marketplace listing cards: 5
+  PASS: marketplace listings rendered
+
+  Click first listing → /programs/[id]
+  program detail URL: https://eks-health.vercel.app/programs/lst_0ms9uwnae0eb2vwvnutcc2a3w
+  program page body length: 39
+  program page headings: 
+  WARN: program detail page may be sparse (body=39)
+
+----------------------------------------------------------------
+PHASE 4 — /dashboard/settings (Participant auth)
+----------------------------------------------------------------
+  Signed in as Participant
+  Navigating to /dashboard/settings...
+  settings URL: https://eks-health.vercel.app/dashboard/settings
+  settings cards: 6
+  settings headings: 
+  PASS: settings page rendered with multiple cards
+
+----------------------------------------------------------------
+PHASE 5 — /dashboard/timeline (Participant auth)
+----------------------------------------------------------------
+  Navigating to /dashboard/timeline...
+  timeline URL: https://eks-health.vercel.app/dashboard/timeline
+  timeline filter buttons: 4
+  timeline entries: 12
+  PASS: timeline rendered with filters and entries
+
+----------------------------------------------------------------
+OVERALL SUMMARY
+----------------------------------------------------------------
+  Phase 1 (role dashboards):
+    PARTIAL|Participant|session OK but dashboard body empty
+    PARTIAL|Technician|session OK but dashboard body empty
+    PARTIAL|Developer|session OK but dashboard body empty
+    PARTIAL|Researcher|session OK but dashboard body empty
+    PARTIAL|Org Admin|session OK but dashboard body empty
+    PARTIAL|Platform Admin|session OK but dashboard body empty
+
+  Phase 2 (participant action APIs): direct fetch probes (see above)
+  Phase 3 (marketplace):  5 listings, program page body=39
+  Phase 4 (settings):     6 cards (url=https://eks-health.vercel.app/dashboard/settings)
+  Phase 5 (timeline):     12 entries, 4 filters
+
+Artifacts:
+  Logs:        /home/z/my-project/.zscripts/logs/verify-live/
+  Screenshots: /home/z/my-project/.zscripts/screenshots/verify-live/
+  Summary:     /home/z/my-project/.zscripts/logs/verify-live/SUMMARY.txt
+  Bugs:        /home/z/my-project/.zscripts/logs/verify-live/BUGS.txt
+
+---- BUGS / ISSUES DISCOVERED ----
+[Participant] /api/missions/complete failed: 
+[Participant] /api/missions/habits failed: 
+[Participant] /api/health/measurements failed: 
+[Marketplace] program detail page sparse (url=https://eks-health.vercel.app/programs/lst_0ms9uwnae0eb2vwvnutcc2a3w, body=39)
+
+Done.

@@ -89,7 +89,7 @@ export default function MarketplacePage() {
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {filtered.map(l => (
-              <Card key={l.id} className="hover:border-[var(--brand)]/40 transition-colors cursor-pointer" onClick={() => router.push(`/programs/${l.id}`)}>
+              <Card key={l.id} className="hover:border-[var(--brand)]/40 transition-colors cursor-pointer" onClick={() => router.push(`/programs/${l.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")}`)}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex-1 min-w-0">

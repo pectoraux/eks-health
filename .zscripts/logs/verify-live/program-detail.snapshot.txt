@@ -1,0 +1,2 @@
+- button "Back to Marketplace" [ref=e1]
+- region "Notifications (F8)" [ref=e2]

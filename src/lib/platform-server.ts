@@ -270,6 +270,11 @@ export function ensureHydrated(): Promise<void> {
     _hydratePromise = (async () => {
       ensurePlatform();
       try {
+        // Hydrate accounts + sessions from DB first (critical for serverless
+        // cold starts where the in-memory store is empty).
+        await getAccounts().hydrateFromDb();
+        await getSessions().hydrateFromDb();
+        // Seed demo data (skips if already hydrated from DB).
         await seedProgramDemoData();
         await seedHealthDemoData();
         await seedTechnicianDemoData();

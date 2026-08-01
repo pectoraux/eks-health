@@ -1,0 +1,678 @@
+     1→"use client";
+     2→
+     3→import { useState, useEffect, useCallback } from "react";
+     4→import { useRouter } from "next/navigation";
+     5→import {
+     6→  HeartPulse, LogOut, User, Shield, Bell, Smartphone, Package,
+     7→  Building2, Lock,
+     8→} from "lucide-react";
+     9→import { Button } from "@/components/ui/button";
+    10→import { Badge } from "@/components/ui/badge";
+    11→import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+    12→import { Input } from "@/components/ui/input";
+    13→import { Label } from "@/components/ui/label";
+    14→import {
+    15→  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+    16→} from "@/components/ui/dialog";
+    17→import { Switch } from "@/components/ui/switch";
+    18→import { toast } from "@/hooks/use-toast";
+    19→
+    20→// ---------------------------------------------------------------------------
+    21→// Typed API shapes
+    22→// ---------------------------------------------------------------------------
+    23→
+    24→interface Session {
+    25→  email: string;
+    26→  displayName: string;
+    27→  activePersona: string;
+    28→  personas: string[];
+    29→  isDemo: boolean;
+    30→  isAdmin: boolean;
+    31→  accountId: string;
+    32→}
+    33→
+    34→interface Device {
+    35→  id: string;
+    36→  type: string;
+    37→  label: string;
+    38→  deviceModel?: string;
+    39→  verified: boolean;
+    40→}
+    41→
+    42→interface ConsentRecord {
+    43→  id: string;
+    44→  programId: string;
+    45→  purpose: string;
+    46→  description?: string;
+    47→  approvedFields: readonly string[];
+    48→  status: string;
+    49→  grantedAt?: string;
+    50→  expiresAt?: string;
+    51→}
+    52→
+    53→interface OrganizationRecord {
+    54→  id: string;
+    55→  name: string;
+    56→  type: string;
+    57→  slug: string;
+    58→  status: string;
+    59→}
+    60→
+    61→interface OrgMembershipRecord {
+    62→  orgId: string;
+    63→  accountId: string;
+    64→  role: string;
+    65→  title?: string;
+    66→  active: boolean;
+    67→}
+    68→
+    69→interface UserOrg {
+    70→  org: OrganizationRecord;
+    71→  membership: OrgMembershipRecord;
+    72→}
+    73→
+    74→// ---------------------------------------------------------------------------
+    75→// Notification preferences (localStorage — no preferences API exists yet)
+    76→// ---------------------------------------------------------------------------
+    77→
+    78→interface NotificationPrefs {
+    79→  missionReminders: boolean;
+    80→  competitionUpdates: boolean;
+    81→  rewardNotifications: boolean;
+    82→  researchParticipation: boolean;
+    83→}
+    84→
+    85→const DEFAULT_PREFS: NotificationPrefs = {
+    86→  missionReminders: true,
+    87→  competitionUpdates: true,
+    88→  rewardNotifications: true,
+    89→  researchParticipation: false,
+    90→};
+    91→
+    92→const PREFS_STORAGE_KEY = "eks.notificationPrefs";
+    93→
+    94→const NOTIFICATION_LABELS: Record<keyof NotificationPrefs, string> = {
+    95→  missionReminders: "Mission reminders",
+    96→  competitionUpdates: "Competition updates",
+    97→  rewardNotifications: "Reward notifications",
+    98→  researchParticipation: "Research participation",
+    99→};
+   100→
+   101→function loadPrefs(): NotificationPrefs {
+   102→  if (typeof window === "undefined") return DEFAULT_PREFS;
+   103→  try {
+   104→    const raw = window.localStorage.getItem(PREFS_STORAGE_KEY);
+   105→    if (!raw) return DEFAULT_PREFS;
+   106→    const parsed = JSON.parse(raw) as Partial<NotificationPrefs>;
+   107→    return { ...DEFAULT_PREFS, ...parsed };
+   108→  } catch {
+   109→    return DEFAULT_PREFS;
+   110→  }
+   111→}
+   112→
+   113→function savePrefs(prefs: NotificationPrefs): void {
+   114→  try {
+   115→    window.localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(prefs));
+   116→  } catch {
+   117→    // localStorage may be unavailable (private mode) — best-effort
+   118→  }
+   119→}
+   120→
+   121→// ---------------------------------------------------------------------------
+   122→// Page
+   123→// ---------------------------------------------------------------------------
+   124→
+   125→export default function SettingsPage() {
+   126→  const router = useRouter();
+   127→  const [session, setSession] = useState<Session | null>(null);
+   128→  const [displayName, setDisplayName] = useState("");
+   129→  const [savingProfile, setSavingProfile] = useState(false);
+   130→  const [passwordDialog, setPasswordDialog] = useState(false);
+   131→  const [currentPw, setCurrentPw] = useState("");
+   132→  const [newPw, setNewPw] = useState("");
+   133→  const [confirmPw, setConfirmPw] = useState("");
+   134→  const [changingPw, setChangingPw] = useState(false);
+   135→  const [mfaEnabled, setMfaEnabled] = useState(false);
+   136→  const [togglingMfa, setTogglingMfa] = useState(false);
+   137→  const [devices, setDevices] = useState<Device[]>([]);
+   138→
+   139→  // Notifications
+   140→  const [prefs, setPrefs] = useState<NotificationPrefs>(DEFAULT_PREFS);
+   141→
+   142→  // Consent dialog
+   143→  const [consentDialog, setConsentDialog] = useState(false);
+   144→  const [consents, setConsents] = useState<ConsentRecord[]>([]);
+   145→  const [loadingConsents, setLoadingConsents] = useState(false);
+   146→
+   147→  // Organizations
+   148→  const [userOrgs, setUserOrgs] = useState<UserOrg[]>([]);
+   149→  const [loadingOrgs, setLoadingOrgs] = useState(true);
+   150→
+   151→  // Hydrate notification prefs from localStorage on mount.
+   152→  useEffect(() => {
+   153→    setPrefs(loadPrefs());
+   154→  }, []);
+   155→
+   156→  // Session + dependent loads
+   157→  useEffect(() => {
+   158→    let cancelled = false;
+   159→    fetch("/api/auth/session", { cache: "no-store" })
+   160→      .then((r) => r.json())
+   161→      .then((d) => {
+   162→        if (cancelled) return;
+   163→        if (d.ok && d.data) {
+   164→          setSession(d.data);
+   165→          setDisplayName(d.data.displayName);
+   166→          // Fetch account details for MFA status
+   167→          fetch(`/api/identity/accounts/${d.data.accountId}`)
+   168→            .then((r) => r.json())
+   169→            .then((acc) => {
+   170→              if (!cancelled && acc.ok) setMfaEnabled(acc.data.mfaEnabled);
+   171→            })
+   172→            .catch(() => {});
+   173→          // Fetch devices
+   174→          fetch("/api/technicians/devices")
+   175→            .then((r) => r.json())
+   176→            .then((dev) => {
+   177→              if (!cancelled && dev.ok) setDevices(dev.data.devices ?? []);
+   178→            })
+   179→            .catch(() => {});
+   180→        } else {
+   181→          router.push("/sign-in");
+   182→        }
+   183→      })
+   184→      .catch(() => {
+   185→        if (!cancelled) router.push("/sign-in");
+   186→      });
+   187→    return () => {
+   188→      cancelled = true;
+   189→    };
+   190→  }, [router]);
+   191→
+   192→  // Load organizations and resolve the user's memberships.
+   193→  const loadOrgs = useCallback(async (accountId: string) => {
+   194→    setLoadingOrgs(true);
+   195→    try {
+   196→      const listRes = await fetch("/api/identity/orgs", { cache: "no-store" });
+   197→      const listJson = await listRes.json();
+   198→      const allOrgs: OrganizationRecord[] = listJson.ok ? (listJson.data ?? []) : [];
+   199→
+   200→      // For each org, fetch members and check if this account is a member.
+   201→      const memberships = await Promise.all(
+   202→        allOrgs.map(async (org) => {
+   203→          try {
+   204→            const r = await fetch(`/api/identity/orgs/${org.id}`, { cache: "no-store" });
+   205→            const j = await r.json();
+   206→            if (!j.ok) return null;
+   207→            const members: OrgMembershipRecord[] = j.data?.members ?? [];
+   208→            const membership = members.find(
+   209→              (m) => m.accountId === accountId && m.active,
+   210→            );
+   211→            return membership ? { org, membership } : null;
+   212→          } catch {
+   213→            return null;
+   214→          }
+   215→        }),
+   216→      );
+   217→      setUserOrgs(memberships.filter((m): m is UserOrg => m !== null));
+   218→    } catch {
+   219→      toast({
+   220→        title: "Failed to load organizations",
+   221→        description: "Could not fetch your organization memberships.",
+   222→        variant: "destructive",
+   223→      });
+   224→    } finally {
+   225→      setLoadingOrgs(false);
+   226→    }
+   227→  }, []);
+   228→
+   229→  useEffect(() => {
+   230→    if (!session?.accountId) return;
+   231→    void loadOrgs(session.accountId);
+   232→  }, [session?.accountId, loadOrgs]);
+   233→
+   234→  if (!session) {
+   235→    return (
+   236→      <div className="min-h-screen flex items-center justify-center">
+   237→        <div className="h-8 w-8 rounded-full border-2 border-muted border-t-foreground animate-spin" />
+   238→      </div>
+   239→    );
+   240→  }
+   241→
+   242→  const signOut = async () => {
+   243→    try {
+   244→      await fetch("/api/auth/sign-out", { method: "POST" });
+   245→    } catch {
+   246→      // best-effort
+   247→    }
+   248→    router.push("/");
+   249→  };
+   250→
+   251→  const saveProfile = async () => {
+   252→    setSavingProfile(true);
+   253→    try {
+   254→      const res = await fetch(`/api/identity/accounts/${session.accountId}`, {
+   255→        method: "PUT",
+   256→        headers: { "Content-Type": "application/json" },
+   257→        body: JSON.stringify({ displayName }),
+   258→      });
+   259→      const data = await res.json();
+   260→      if (data.ok) {
+   261→        toast({ title: "Profile saved", description: "Your display name has been updated." });
+   262→      } else {
+   263→        toast({ title: "Failed", description: data.error?.message ?? "Could not save", variant: "destructive" });
+   264→      }
+   265→    } catch {
+   266→      toast({ title: "Error", description: "Network error", variant: "destructive" });
+   267→    } finally {
+   268→      setSavingProfile(false);
+   269→    }
+   270→  };
+   271→
+   272→  const changePassword = async () => {
+   273→    if (newPw !== confirmPw) {
+   274→      toast({ title: "Mismatch", description: "New passwords don't match", variant: "destructive" });
+   275→      return;
+   276→    }
+   277→    if (newPw.length < 8) {
+   278→      toast({ title: "Too short", description: "Password must be at least 8 characters", variant: "destructive" });
+   279→      return;
+   280→    }
+   281→    setChangingPw(true);
+   282→    try {
+   283→      const res = await fetch(`/api/identity/accounts/${session.accountId}/password`, {
+   284→        method: "POST",
+   285→        headers: { "Content-Type": "application/json" },
+   286→        body: JSON.stringify({ currentPassword: currentPw, newPassword: newPw }),
+   287→      });
+   288→      const data = await res.json();
+   289→      if (data.ok) {
+   290→        toast({ title: "Password changed", description: "Your password has been updated." });
+   291→        setPasswordDialog(false);
+   292→        setCurrentPw(""); setNewPw(""); setConfirmPw("");
+   293→      } else {
+   294→        toast({ title: "Failed", description: data.error?.message ?? "Could not change password", variant: "destructive" });
+   295→      }
+   296→    } catch {
+   297→      toast({ title: "Error", description: "Network error", variant: "destructive" });
+   298→    } finally {
+   299→      setChangingPw(false);
+   300→    }
+   301→  };
+   302→
+   303→  const toggleMfa = async (enabled: boolean) => {
+   304→    setTogglingMfa(true);
+   305→    try {
+   306→      const res = await fetch(`/api/identity/accounts/${session.accountId}/mfa`, {
+   307→        method: "POST",
+   308→        headers: { "Content-Type": "application/json" },
+   309→        body: JSON.stringify({ enabled }),
+   310→      });
+   311→      const data = await res.json();
+   312→      if (data.ok) {
+   313→        setMfaEnabled(data.data.mfaEnabled);
+   314→        toast({
+   315→          title: enabled ? "MFA enabled" : "MFA disabled",
+   316→          description: enabled
+   317→            ? "Multi-factor authentication is now active."
+   318→            : "MFA has been turned off.",
+   319→        });
+   320→      } else {
+   321→        toast({ title: "Failed", description: data.error?.message ?? "Could not toggle MFA", variant: "destructive" });
+   322→      }
+   323→    } catch {
+   324→      toast({ title: "Error", description: "Network error", variant: "destructive" });
+   325→    } finally {
+   326→      setTogglingMfa(false);
+   327→    }
+   328→  };
+   329→
+   330→  const toggleNotification = (key: keyof NotificationPrefs, enabled: boolean) => {
+   331→    const next = { ...prefs, [key]: enabled };
+   332→    setPrefs(next);
+   333→    savePrefs(next);
+   334→    toast({
+   335→      title: enabled ? "Notifications on" : "Notifications off",
+   336→      description: `${NOTIFICATION_LABELS[key]} ${enabled ? "enabled" : "disabled"}.`,
+   337→    });
+   338→  };
+   339→
+   340→  const openConsentDialog = async () => {
+   341→    setConsentDialog(true);
+   342→    setLoadingConsents(true);
+   343→    setConsents([]);
+   344→    try {
+   345→      const res = await fetch(
+   346→        `/api/identity/consent?accountId=${encodeURIComponent(session.accountId)}`,
+   347→        { cache: "no-store" },
+   348→      );
+   349→      const data = await res.json();
+   350→      if (data.ok) {
+   351→        // API may return either a Consent[] array or { message: string } when no accountId
+   352→        const list = Array.isArray(data.data) ? (data.data as ConsentRecord[]) : [];
+   353→        setConsents(list);
+   354→      } else {
+   355→        toast({
+   356→          title: "Failed to load consent records",
+   357→          description: data.error?.message ?? "Could not fetch consent records.",
+   358→          variant: "destructive",
+   359→        });
+   360→      }
+   361→    } catch {
+   362→      toast({
+   363→        title: "Error",
+   364→        description: "Network error while fetching consent records.",
+   365→        variant: "destructive",
+   366→      });
+   367→    } finally {
+   368→      setLoadingConsents(false);
+   369→    }
+   370→  };
+   371→
+   372→  const revokeConsent = (consent: ConsentRecord) => {
+   373→    toast({
+   374→      title: "Revoke requested",
+   375→      description: `Consent revocation for "${consent.programId}" requires admin approval.`,
+   376→    });
+   377→  };
+   378→
+   379→  return (
+   380→    <div className="min-h-screen bg-background flex flex-col">
+   381→      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-md">
+   382→        <div className="flex h-14 items-center justify-between px-4 sm:px-6">
+   383→          <button onClick={() => router.push("/dashboard")} className="flex items-center gap-2">
+   384→            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--brand)] text-[var(--brand-foreground)]">
+   385→              <HeartPulse className="h-4 w-4" />
+   386→            </div>
+   387→            <span className="font-bold text-sm">Settings</span>
+   388→          </button>
+   389→          <Button variant="ghost" size="sm" onClick={signOut} aria-label="Sign out">
+   390→            <LogOut className="h-3.5 w-3.5" />
+   391→          </Button>
+   392→        </div>
+   393→      </header>
+   394→
+   395→      <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 space-y-6">
+   396→        <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+   397→
+   398→        {/* Profile */}
+   399→        <Card>
+   400→          <CardHeader>
+   401→            <CardTitle className="text-base flex items-center gap-2">
+   402→              <User className="h-4 w-4" /> Profile
+   403→            </CardTitle>
+   404→          </CardHeader>
+   405→          <CardContent className="space-y-3">
+   406→            <div>
+   407→              <Label htmlFor="name">Display Name</Label>
+   408→              <Input id="name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+   409→            </div>
+   410→            <div>
+   411→              <Label>Email</Label>
+   412→              <Input defaultValue={session.email} disabled />
+   413→            </div>
+   414→            <div>
+   415→              <Label>Active Role</Label>
+   416→              <div className="flex flex-wrap gap-2 mt-1">
+   417→                {session.personas.map((p) => (
+   418→                  <Badge key={p} variant={p === session.activePersona ? "default" : "outline"} className="text-xs">
+   419→                    {p.replace(/_/g, " ")}
+   420→                  </Badge>
+   421→                ))}
+   422→              </div>
+   423→            </div>
+   424→            <Button size="sm" onClick={saveProfile} disabled={savingProfile || displayName === session.displayName}>
+   425→              {savingProfile ? "Saving..." : "Save Profile"}
+   426→            </Button>
+   427→          </CardContent>
+   428→        </Card>
+   429→
+   430→        {/* Security */}
+   431→        <Card>
+   432→          <CardHeader>
+   433→            <CardTitle className="text-base flex items-center gap-2">
+   434→              <Lock className="h-4 w-4" /> Security
+   435→            </CardTitle>
+   436→          </CardHeader>
+   437→          <CardContent className="space-y-3 text-sm">
+   438→            <div className="flex items-center justify-between">
+   439→              <div>
+   440→                <span>Multi-Factor Authentication</span>
+   441→                <p className="text-xs text-muted-foreground">Add an extra layer of security to your account.</p>
+   442→              </div>
+   443→              <div className="flex items-center gap-2">
+   444→                <Badge variant={mfaEnabled ? "default" : "secondary"}>{mfaEnabled ? "Enabled" : "Disabled"}</Badge>
+   445→                <Switch checked={mfaEnabled} onCheckedChange={toggleMfa} disabled={togglingMfa} aria-label="Toggle MFA" />
+   446→              </div>
+   447→            </div>
+   448→            <div className="flex items-center justify-between">
+   449→              <span>Session timeout</span>
+   450→              <Badge variant="outline">7 days</Badge>
+   451→            </div>
+   452→            <div className="flex items-center justify-between">
+   453→              <span>Password</span>
+   454→              <Button variant="outline" size="sm" onClick={() => setPasswordDialog(true)}>Change</Button>
+   455→            </div>
+   456→          </CardContent>
+   457→        </Card>
+   458→
+   459→        {/* Devices */}
+   460→        <Card>
+   461→          <CardHeader>
+   462→            <CardTitle className="text-base flex items-center gap-2">
+   463→              <Smartphone className="h-4 w-4" /> Devices
+   464→            </CardTitle>
+   465→          </CardHeader>
+   466→          <CardContent>
+   467→            {devices.length === 0 ? (
+   468→              <p className="text-sm text-muted-foreground">No devices connected. Connect a wearable or measurement device to sync data automatically.</p>
+   469→            ) : (
+   470→              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+   471→                {devices.map((d) => (
+   472→                  <div key={d.id} className="flex items-center justify-between rounded-lg border border-border/60 p-2.5 text-sm">
+   473→                    <div className="flex items-center gap-2">
+   474→                      <Smartphone className="h-4 w-4 text-muted-foreground" />
+   475→                      <div>
+   476→                        <span className="font-medium">{d.label}</span>
+   477→                        {d.deviceModel && <span className="text-muted-foreground ml-2">{d.deviceModel}</span>}
+   478→                      </div>
+   479→                    </div>
+   480→                    <Badge variant={d.verified ? "default" : "secondary"} className="text-[10px]">{d.verified ? "Verified" : "Pending"}</Badge>
+   481→                  </div>
+   482→                ))}
+   483→              </div>
+   484→            )}
+   485→          </CardContent>
+   486→        </Card>
+   487→
+   488→        {/* Installed Programs */}
+   489→        <Card>
+   490→          <CardHeader>
+   491→            <CardTitle className="text-base flex items-center gap-2">
+   492→              <Package className="h-4 w-4" /> Installed Programs
+   493→            </CardTitle>
+   494→          </CardHeader>
+   495→          <CardContent>
+   496→            <p className="text-sm text-muted-foreground">Manage your installed health programs and their permissions.</p>
+   497→            <Button variant="outline" size="sm" className="mt-2" onClick={() => router.push("/marketplace")}>Browse Marketplace</Button>
+   498→          </CardContent>
+   499→        </Card>
+   500→
+   501→        {/* Privacy & Consent */}
+   502→        <Card>
+   503→          <CardHeader>
+   504→            <CardTitle className="text-base flex items-center gap-2">
+   505→              <Shield className="h-4 w-4" /> Privacy & Consent
+   506→            </CardTitle>
+   507→          </CardHeader>
+   508→          <CardContent className="space-y-2 text-sm">
+   509→            <div className="flex items-center justify-between"><span>Field-level consent management</span><Badge variant="outline">Active</Badge></div>
+   510→            <div className="flex items-center justify-between"><span>Purpose-based access control</span><Badge variant="outline">Enforced</Badge></div>
+   511→            <div className="flex items-center justify-between"><span>Data residency</span><Badge variant="outline">Africa/Accra</Badge></div>
+   512→            <p className="text-xs text-muted-foreground mt-2">Your data is encrypted, consent-gated, and fully auditable. You can revoke access at any time.</p>
+   513→            <Button variant="outline" size="sm" className="mt-2" onClick={openConsentDialog}>
+   514→              Manage Consent
+   515→            </Button>
+   516→          </CardContent>
+   517→        </Card>
+   518→
+   519→        {/* Notifications */}
+   520→        <Card>
+   521→          <CardHeader>
+   522→            <CardTitle className="text-base flex items-center gap-2">
+   523→              <Bell className="h-4 w-4" /> Notifications
+   524→            </CardTitle>
+   525→          </CardHeader>
+   526→          <CardContent className="space-y-3 text-sm">
+   527→            {(Object.keys(NOTIFICATION_LABELS) as Array<keyof NotificationPrefs>).map((key) => (
+   528→              <div key={key} className="flex items-center justify-between">
+   529→                <span>{NOTIFICATION_LABELS[key]}</span>
+   530→                <Switch
+   531→                  checked={prefs[key]}
+   532→                  onCheckedChange={(enabled) => toggleNotification(key, enabled)}
+   533→                  aria-label={`Toggle ${NOTIFICATION_LABELS[key]}`}
+   534→                />
+   535→              </div>
+   536→            ))}
+   537→            <p className="text-xs text-muted-foreground pt-1">
+   538→              Preferences are stored locally on this device.
+   539→            </p>
+   540→          </CardContent>
+   541→        </Card>
+   542→
+   543→        {/* Organizations */}
+   544→        <Card>
+   545→          <CardHeader>
+   546→            <CardTitle className="text-base flex items-center gap-2">
+   547→              <Building2 className="h-4 w-4" /> Organizations
+   548→            </CardTitle>
+   549→          </CardHeader>
+   550→          <CardContent>
+   551→            {loadingOrgs ? (
+   552→              <p className="text-sm text-muted-foreground">Loading organizations...</p>
+   553→            ) : userOrgs.length === 0 ? (
+   554→              <p className="text-sm text-muted-foreground">You are not a member of any organization.</p>
+   555→            ) : (
+   556→              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+   557→                {userOrgs.map(({ org, membership }) => (
+   558→                  <div
+   559→                    key={org.id}
+   560→                    className="flex items-center justify-between rounded-lg border border-border/60 p-2.5 text-sm"
+   561→                  >
+   562→                    <div className="min-w-0">
+   563→                      <div className="font-medium truncate">{org.name}</div>
+   564→                      <div className="text-xs text-muted-foreground truncate">{org.slug}</div>
+   565→                    </div>
+   566→                    <div className="flex items-center gap-1.5 shrink-0">
+   567→                      <Badge variant="outline" className="text-[10px] capitalize">{org.type.replace(/_/g, " ")}</Badge>
+   568→                      <Badge variant="secondary" className="text-[10px] capitalize">{membership.role}</Badge>
+   569→                    </div>
+   570→                  </div>
+   571→                ))}
+   572→              </div>
+   573→            )}
+   574→          </CardContent>
+   575→        </Card>
+   576→      </main>
+   577→
+   578→      <footer className="border-t border-border mt-auto">
+   579→        <div className="max-w-3xl mx-auto px-4 py-4 text-xs text-muted-foreground text-center">
+   580→          Eks-Health — Preventive Health Operating System · prototype
+   581→        </div>
+   582→      </footer>
+   583→
+   584→      {/* Change Password Dialog */}
+   585→      <Dialog open={passwordDialog} onOpenChange={setPasswordDialog}>
+   586→        <DialogContent>
+   587→          <DialogHeader>
+   588→            <DialogTitle>Change Password</DialogTitle>
+   589→          </DialogHeader>
+   590→          <div className="space-y-3 py-2">
+   591→            <div className="space-y-1.5">
+   592→              <Label htmlFor="currentPw">Current Password</Label>
+   593→              <Input id="currentPw" type="password" value={currentPw} onChange={(e) => setCurrentPw(e.target.value)} />
+   594→            </div>
+   595→            <div className="space-y-1.5">
+   596→              <Label htmlFor="newPw">New Password</Label>
+   597→              <Input id="newPw" type="password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
+   598→            </div>
+   599→            <div className="space-y-1.5">
+   600→              <Label htmlFor="confirmPw">Confirm New Password</Label>
+   601→              <Input id="confirmPw" type="password" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} />
+   602→            </div>
+   603→            {newPw && newPw.length < 8 && (
+   604→              <p className="text-xs text-amber-600">Password must be at least 8 characters.</p>
+   605→            )}
+   606→          </div>
+   607→          <DialogFooter>
+   608→            <Button variant="outline" onClick={() => setPasswordDialog(false)}>Cancel</Button>
+   609→            <Button onClick={changePassword} disabled={changingPw || !currentPw || !newPw || !confirmPw}>
+   610→              {changingPw ? "Changing..." : "Change Password"}
+   611→            </Button>
+   612→          </DialogFooter>
+   613→        </DialogContent>
+   614→      </Dialog>
+   615→
+   616→      {/* Manage Consent Dialog */}
+   617→      <Dialog open={consentDialog} onOpenChange={setConsentDialog}>
+   618→        <DialogContent className="max-w-lg">
+   619→          <DialogHeader>
+   620→            <DialogTitle>Manage Consent</DialogTitle>
+   621→          </DialogHeader>
+   622→          <div className="py-2">
+   623→            {loadingConsents ? (
+   624→              <div className="flex items-center justify-center py-6">
+   625→                <div className="h-6 w-6 rounded-full border-2 border-muted border-t-foreground animate-spin" />
+   626→              </div>
+   627→            ) : consents.length === 0 ? (
+   628→              <p className="text-sm text-muted-foreground py-4 text-center">
+   629→                You have no active consent records. Programs you install will appear here once you grant them access.
+   630→              </p>
+   631→            ) : (
+   632→              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+   633→                {consents.map((c) => (
+   634→                  <div key={c.id} className="rounded-lg border border-border/60 p-3 text-sm space-y-1.5">
+   635→                    <div className="flex items-start justify-between gap-2">
+   636→                      <div className="min-w-0">
+   637→                        <div className="font-medium truncate">{c.programId}</div>
+   638→                        <div className="text-xs text-muted-foreground truncate">{c.purpose}</div>
+   639→                      </div>
+   640→                      <Badge
+   641→                        variant={c.status === "active" ? "default" : "secondary"}
+   642→                        className="text-[10px] capitalize shrink-0"
+   643→                      >
+   644→                        {c.status}
+   645→                      </Badge>
+   646→                    </div>
+   647→                    <div className="text-xs text-muted-foreground">
+   648→                      <span className="font-medium text-foreground">Scope:</span>{" "}
+   649→                      {c.approvedFields.length > 0 ? c.approvedFields.join(", ") : "—"}
+   650→                    </div>
+   651→                    {c.expiresAt && (
+   652→                      <div className="text-xs text-muted-foreground">
+   653→                        <span className="font-medium text-foreground">Expires:</span>{" "}
+   654→                        {new Date(c.expiresAt).toLocaleDateString()}
+   655→                      </div>
+   656→                    )}
+   657→                    <Button
+   658→                      size="sm"
+   659→                      variant="outline"
+   660→                      className="h-7 text-xs mt-1"
+   661→                      onClick={() => revokeConsent(c)}
+   662→                    >
+   663→                      Revoke
+   664→                    </Button>
+   665→                  </div>
+   666→                ))}
+   667→              </div>
+   668→            )}
+   669→          </div>
+   670→          <DialogFooter>
+   671→            <Button variant="outline" onClick={() => setConsentDialog(false)}>Close</Button>
+   672→          </DialogFooter>
+   673→        </DialogContent>
+   674→      </Dialog>
+   675→    </div>
+   676→  );
+   677→}
+   678→

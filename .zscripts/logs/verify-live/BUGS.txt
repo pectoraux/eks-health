@@ -1,0 +1,141 @@
+# Bugs discovered on https://eks-health.vercel.app (live Vercel deployment)
+
+Tested: 2026-08-01 via agent-browser (Task verify-live-1)
+
+## BUG 1 — /dashboard renders empty body for ALL 6 roles
+**Severity: Critical (blocker for the entire authenticated UX)**
+
+**Symptom:**
+After signing in (via quick-login button OR form-fill + Sign In click),
+the browser navigates to /dashboard but the page body is empty. Only the
+top nav bar (Welcome header, Marketplace/Timeline/Settings/Console links)
+and footer render. No "Today's Missions", "Habit Streaks", "Active Goals",
+"Active Competitions", or "Recent Measurements" cards appear. The URL
+often bounces back to /sign-in within ~1-2 seconds.
+
+**Reproduction:**
+1. Open https://eks-health.vercel.app/sign-in
+2. Click any quick-login button (e.g. "🏃 Participant")
+3. URL changes to /dashboard
+4. Within ~2s, the page either:
+   (a) redirects back to /sign-in, OR
+   (b) stays at /dashboard but shows an empty body (only header + footer)
+
+**Root cause:**
+`/api/dashboard` route (src/app/api/dashboard/route.ts) uses
+`ensureHydrated()` which does NOT hydrate the sessions store from the DB.
+On Vercel serverless, fresh function instances have an empty in-memory
+sessions store, so `getSession()` returns null → 401 → React sets
+`data=null` → body doesn't render. If `!sessData.data`, the page also
+calls `router.push("/sign-in")`.
+
+Meanwhile `/api/auth/session` route (src/app/api/auth/session/route.ts)
+correctly calls `ensureAdminAccount()` + `ensureDemoAccounts()` which DO
+hydrate sessions via `getSessions().hydrateFromDb()`. So direct API
+probes of /api/auth/session succeed, but the React app's parallel fetch
+to /api/dashboard hits a different instance and fails.
+
+Direct `fetch("/api/dashboard")` from the console sometimes returns 200
+(when routed to a warm instance) and sometimes 401 (cold instance) —
+confirming the serverless instance routing issue.
+
+**Evidence:**
+- Network trace: `GET /api/auth/session → 200` alongside
+  `GET /api/dashboard → 401` in the same useEffect batch.
+- Direct `fetch("/api/dashboard")` returns 200 with full data when the
+  instance is warm, 401 when cold.
+- All 6 roles affected: Participant, Technician, Developer, Researcher,
+  Org Admin, Platform Admin.
+
+**Fix:**
+Add `await ensureAdminAccount();` (or refactor `ensureHydrated()` to
+also call `getSessions().hydrateFromDb()`) at the top of
+`/api/dashboard`'s GET handler, before calling `getSession()`.
+Alternatively, move session hydration into `ensurePlatform()` so every
+route that calls `getSession()` gets it for free.
+
+---
+
+## BUG 2 — /programs/[id] shows "Program not found" after clicking a marketplace listing
+**Severity: High (marketplace click-through is broken)**
+
+**Symptom:**
+On /marketplace, clicking any listing card navigates to
+`/programs/{listingId}`, but the program detail page shows
+"Program not found." with a "Back to Marketplace" button.
+
+**Reproduction:**
+1. Open https://eks-health.vercel.app/marketplace
+2. Click any listing card (e.g. "Cardio Care")
+3. URL changes to /programs/lst_0ms9v5oanvaim4ddzlsgk0pw6
+4. Page shows "Program not found."
+
+**Root cause:**
+Marketplace demo data (`seedMarketplaceDemoData()`) is seeded in-memory
+on each Vercel serverless instance with fresh IDs (using `nanoid()` or
+similar). When the marketplace page fetches /api/marketplace/listings
+from instance A, it gets listing IDs like `lst_0ms9v5oanvaim4ddzlsgk0pw6`.
+When the user clicks a listing, the program detail page fetches
+/api/marketplace/listings from instance B, which has DIFFERENT listing
+IDs (e.g. `lst_0ms9uwnae0eb2vwvnutcc2a3w`). The clicked ID doesn't
+exist in instance B's list → `find()` returns undefined →
+"Program not found."
+
+**Evidence:**
+- Marketplace page: first listing ID = `lst_0ms9v5oanvaim4ddzlsgk0pw6`
+  (Cardio Care)
+- Program detail page: first listing ID = `lst_0ms9uwnae0eb2vwvnutcc2a3w`
+  (Cardio Care) — same name, different ID
+- Both are "Cardio Care" but the IDs differ across instances.
+
+**Fix:**
+Persist marketplace listings to the DB (Prisma/SQLite) so IDs are stable
+across instances. The `db-store.ts` module already provides this pattern
+for waitlist entries — extend it to marketplace listings.
+Alternatively, use deterministic IDs (e.g. slug-based) for demo data.
+
+---
+
+## BUG 3 — /api/auth/sign-out returns non-2xx status
+**Severity: Low (cosmetic / test-harness issue)**
+
+**Symptom:**
+Calling `GET /api/auth/sign-out` (or `POST /api/auth/sign-out`) returns
+an HTTP error status (agent-browser reports `net::ERR_HTTP_RESPONSE_CODE_FAILURE`).
+
+**Reproduction:**
+```
+agent-browser open https://eks-health.vercel.app/api/auth/sign-out
+# → "Navigation failed: net::ERR_HTTP_RESPONSE_CODE_FAILURE"
+```
+
+**Impact:**
+The sign-out API works functionally (clears cookies) but returns a
+status code that browsers treat as a navigation error. This may affect
+user experience if the sign-out flow relies on navigation rather than
+fetch().
+
+---
+
+## Summary of what WORKS on the live site
+
+| Feature                                   | Status |
+|-------------------------------------------|--------|
+| POST /api/auth/sign-in (all 6 roles)      | ✅     |
+| GET /api/auth/session (all 6 roles)       | ✅     |
+| GET /api/dashboard (direct fetch, warm)   | ✅     |
+| GET /api/missions/list                    | ✅     |
+| GET /api/missions/habits                  | ✅     |
+| POST /api/missions/complete               | ✅     |
+| POST /api/missions/habits (check-in)      | ✅     |
+| GET /api/health/schemas                   | ✅     |
+| GET /api/health/sources                   | ✅     |
+| POST /api/health/measurements             | ✅     |
+| GET /api/competitions/list                | ✅     |
+| GET /api/marketplace/listings (public)    | ✅     |
+| /marketplace UI (listing grid)            | ✅     |
+| /dashboard/settings UI (6 cards)          | ✅     |
+| /dashboard/timeline UI (12 entries, 4 filters) | ✅ |
+| /dashboard UI (body content)              | ❌ BUG 1 |
+| /programs/[id] UI (program detail)        | ❌ BUG 2 |
+| /api/auth/sign-out                        | ⚠️ BUG 3 |
