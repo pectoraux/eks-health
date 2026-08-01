@@ -2359,3 +2359,23 @@ Stage Summary:
 - All 6 role dashboards: browser-verified with interactive elements
 - 4 new API routes: PUT account, POST password, POST MFA, POST install
 - 0 lint errors, 0 runtime errors, all features verified
+
+---
+Task ID: fix-settings-timeline-1
+Agent: full-stack-developer
+Task: Fix settings + timeline pages
+
+Work Log:
+- Settings > Notifications: replaced 4 static badges with interactive `<Switch>` components backed by localStorage (key `eks.notificationPrefs`). Defaults: mission reminders on, competition updates on, reward notifications on, research participation off. Each toggle persists and fires a toast.
+- Settings > Privacy & Consent: added "Manage Consent" button that opens a dialog. Fetches `/api/identity/consent?accountId=${session.accountId}`. Each record shows program name, purpose, scope (approvedFields), status badge, expiry date, and a "Revoke" button (toast-only: "Consent revocation requires admin approval"). Loading spinner, empty state, and try/catch with destructive toast all wired up.
+- Settings > Organizations: fetches `/api/identity/orgs` then per-org `/api/identity/orgs/${id}` to resolve the user's memberships. Shows org name + type badge + member role badge for each org the user belongs to. Falls back to "You are not a member of any organization." when no memberships. Loading + try/catch error handling.
+- Timeline: added type filter row (All / Measurements / Missions / Competitions) using Button variants, with `useMemo`-driven filtering and `role="tablist"` a11y.
+- Timeline: replaced `new Date().toISOString()` fake timestamps with real ones fetched directly from `/api/missions/list` (uses `scheduledFor` → `createdAt`) and `/api/competitions/list` (uses `startsAt` → `createdAt`). A `pickTimestamp()` helper validates each candidate before use.
+- Timeline: added sign-out button to header (calls `/api/auth/sign-out` then redirects to `/`), matching every other authenticated page.
+- Timeline: replaced all `(m: any)` / `(c: any)` with proper typed interfaces (`MeasurementEntry`, `MissionEntry`, `CompetitionEntry`, `TimelineEntry` with a string-literal union `type`).
+- Both pages: wrapped all async work in try/catch with `toast(..., variant: "destructive")`, added a `cancelled` flag in useEffect to prevent post-unmount state updates, added a sticky footer (`mt-auto`) to the timeline page, added `max-h-96 overflow-y-auto` to long lists (devices, consent records, orgs) per UI rules.
+- Verified `bun run lint` exits 0 (clean).
+
+Stage Summary:
+Settings and Timeline pages are fully wired up to real backend APIs. No `any` types remain. Notification preferences persist in localStorage. Timeline entries now use real per-record timestamps instead of "today". Both pages have sign-out buttons and consistent sticky-header + sticky-footer layout matching the rest of the dashboard. Notes for downstream: `/api/identity/orgs` is not user-scoped — settings page currently fans out per-org to resolve memberships; a future `?accountId=` filter on that endpoint would simplify the page. Consent revoke is intentionally a no-op stub per task spec.
+

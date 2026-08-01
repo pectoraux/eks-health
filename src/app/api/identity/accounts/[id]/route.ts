@@ -43,3 +43,28 @@ export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: 
     return Response.json({ ok: false, error: { message: e.userMessage ?? e.message ?? "Update failed" } }, { status: 400 });
   }
 }
+
+// Suspend / Activate account (admin action)
+export async function POST(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  ensurePlatform();
+  const { id } = await params;
+  const body = await req.json() as { action?: "suspend" | "activate" };
+  if (!body.action || (body.action !== "suspend" && body.action !== "activate")) {
+    return Response.json({ ok: false, error: { message: "action (suspend|activate) required" } }, { status: 400 });
+  }
+  try {
+    const accounts = getAccounts();
+    const account = accounts.get(id as never);
+    if (!account) return Response.json({ ok: false, error: { message: "Account not found" } }, { status: 404 });
+    if (body.action === "suspend") {
+      accounts.suspend(id as never);
+    } else {
+      accounts.activate(id as never);
+    }
+    const updated = accounts.get(id as never);
+    return Response.json({ ok: true, data: { id, state: updated?.state } });
+  } catch (err) {
+    const e = err as { userMessage?: string; message?: string };
+    return Response.json({ ok: false, error: { message: e.userMessage ?? e.message ?? "Action failed" } }, { status: 400 });
+  }
+}

@@ -1,10 +1,11 @@
-import { withPlatform, getTechnicianRegistry, ensurePlatform } from "@/lib/platform-server";
+import { withPlatform, getTechnicianRegistry, ensurePlatform, ensureHydrated } from "@/lib/platform-server";
 
 export const dynamic = "force-dynamic";
 
 export function GET() {
-  return withPlatform(() => {
+  return withPlatform(async () => {
     ensurePlatform();
+    await ensureHydrated();
     const techs = getTechnicianRegistry();
     return {
       technicians: techs.list().map((t) => ({

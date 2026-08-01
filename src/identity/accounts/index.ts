@@ -443,6 +443,12 @@ export class AccountManager {
     return this.accounts.get(accountId)!;
   }
 
+  /** Reactivate a suspended account. */
+  activate(accountId: AccountId): Account {
+    this.update(accountId, { state: "active" as AccountState, lockedUntil: undefined, failedSignInAttempts: 0 });
+    return this.accounts.get(accountId)!;
+  }
+
   /** Update display name (and optionally other profile fields). */
   updateProfile(accountId: AccountId, updates: { displayName?: string; avatarUrl?: string; locale?: string; timezone?: string }): Account {
     const account = this.accounts.get(accountId);

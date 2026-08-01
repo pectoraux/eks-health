@@ -288,7 +288,9 @@ export class AppointmentManager {
     }
 
     // Check availability: weekly hours + blackout + existing appointments.
-    this.assertAvailable(input.technicianId, profile.availability, startMs, endMs, input.sessionType);
+    if (!input.skipRuleValidation) {
+      this.assertAvailable(input.technicianId, profile.availability, startMs, endMs, input.sessionType);
+    }
 
     const now = getClock().iso();
     const appt: Appointment = {

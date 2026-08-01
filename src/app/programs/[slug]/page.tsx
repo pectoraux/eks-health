@@ -43,7 +43,7 @@ export default function ProgramDetailPage() {
       fetch("/api/auth/session", { cache: "no-store" }).then(r => r.json()),
     ]).then(([d, sess]) => {
       if (d.ok) {
-        const found = (d.data.listings ?? []).find((l: Listing) => l.id === id);
+        const found = (d.data.listings ?? []).find((l: Listing) => l.id === id || l.name?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === id);
         setListing(found || null);
       }
       if (sess.ok && sess.data) setSignedIn(true);
