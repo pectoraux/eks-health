@@ -2486,3 +2486,51 @@ Stage Summary:
 - Program detail navigation works across instances via slug.
 - 0 lint errors, 0 browser errors.
 - Live URL: https://eks-health.vercel.app
+
+---
+Task ID: fix-systematic-1
+Agent: main (claude)
+Task: Systematically find and fix all navigation/state bugs on live Vercel deployment.
+
+Root Cause Analysis:
+- All 6 FAILs in the systematic audit traced to ONE root cause: in-memory state doesn't survive Vercel serverless cold starts.
+- Sessions were persisted to SQLite (doesn't work on Vercel's ephemeral filesystem).
+- getSession() didn't hydrate from DB before validating the access token.
+- Program detail page used params.id but the route folder is [slug] (Next.js returns params.slug).
+
+Fixes Applied:
+1. Switched Prisma provider from sqlite to postgresql (Neon).
+   - Same DATABASE_URL works on both local and Vercel.
+   - All 10 Prisma models now use PostgreSQL.
+   - Vercel env var DATABASE_URL was already PostgreSQL (Neon).
+
+2. Added ensureHydrated() call to getSession() in auth.ts.
+   - This is the single chokepoint all routes use for auth.
+   - Ensures DB-backed sessions + accounts are loaded before validate().
+   - Fixes: dashboard empty body, marketplace logs out, role switcher not working, admin dashboard empty.
+
+3. Fixed program detail page params.
+   - Changed `params.id` to `params.slug || params.id` (Next.js folder is [slug]).
+   - Added triple-match: l.id === id || l.slug === id || slugified_name === id.
+   - Added slug field to marketplace listings API response.
+   - Added debug logging when not found.
+
+4. Marketplace navigation uses slug (deterministic, not random ID).
+
+VERIFIED ON LIVE SITE (https://eks-health.vercel.app):
+- Sign-in → /dashboard: ✅ (shows "Welcome, Ama Serwaa")
+- Dashboard → Marketplace: ✅ (stays logged in, shows "Dashboard" button in header)
+- Marketplace → click "Cardio Care": ✅ (navigates to /programs/cardio-care)
+- Program detail page: ✅ (renders heading "Cardio Care", "Get Started" section, "Install Program" button)
+- Program detail (direct URL): ✅ (renders correctly)
+- All 6 roles sign in + dashboard: ✅
+- Waitlist API (was 500): ✅ 200
+- Admin dashboard: ✅ (6 accounts, 0 waitlist)
+- Zero browser console errors
+
+Stage Summary:
+- 4 commits pushed, deployed to Vercel.
+- Root cause fixed: PostgreSQL + session hydration in getSession().
+- All navigation flows work on live site.
+- 0 lint errors, 0 browser errors.
+- Live URL: https://eks-health.vercel.app
