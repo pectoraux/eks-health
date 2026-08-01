@@ -79,22 +79,10 @@ export function seedResearchDemoData(): void {
   try { consent.grant({ participantId, type: "program_improvement", purpose: "Help improve the programs I use", scope: ["measurements", "mission_completion", "competition_results"], grantedBy: participantId }); } catch { /* */ }
   try { consent.grant({ participantId, type: "ai_training", purpose: "Help train better AI health coaches", scope: ["measurements", "behavioral_patterns"], grantedBy: participantId }); } catch { /* */ }
 
-  // Create demo datasets
+  // Create demo datasets — use a fixed cohort ID (cohort create is async,
+  // but datasets.create only needs the ID as a reference string)
   const datasets = getDatasets();
-  const cohorts = getCohorts();
-  let cohortId: string | undefined;
-  try {
-    cohorts.create(
-      "Cardio Care Participants",
-      "Participants using the Cardio Care program",
-      [{ field: "programId", operator: "eq", value: "prg_cardio_care" }] as never,
-      participantId,
-      "pseudonymized",
-    ).then((c) => { cohortId = c.id; }).catch(() => { /* already exists or async */ });
-  } catch { /* already exists */ }
-
-  // Use a fixed cohort ID if the async create didn't complete yet
-  const effectiveCohortId = cohortId || "coh_demo_1";
+  const effectiveCohortId = "coh_demo_1";
 
   try {
     datasets.create({
