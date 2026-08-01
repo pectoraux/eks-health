@@ -84,41 +84,42 @@ export function seedResearchDemoData(): void {
   const cohorts = getCohorts();
   let cohortId: string | undefined;
   try {
-    const cohort = cohorts.create({
-      name: "Cardio Care Participants",
-      description: "Participants using the Cardio Care program",
-      criteria: { programIds: ["prg_cardio_care"] },
-      createdBy: participantId,
-    });
-    cohortId = cohort.id;
+    cohorts.create(
+      "Cardio Care Participants",
+      "Participants using the Cardio Care program",
+      [{ field: "programId", operator: "eq", value: "prg_cardio_care" }] as never,
+      participantId,
+      "pseudonymized",
+    ).then((c) => { cohortId = c.id; }).catch(() => { /* already exists or async */ });
   } catch { /* already exists */ }
 
-  if (cohortId) {
-    try {
-      datasets.create({
-        name: "Cardiovascular Health Outcomes",
-        description: "Anonymized dataset of cardiovascular measurement trends and program outcomes.",
-        cohortId: cohortId as never,
-        dataCategories: ["measurements", "outcomes", "demographics"],
-        privacyLevel: "pseudonymized",
-        kAnonymityThreshold: 5,
-        createdBy: participantId,
-        retentionDays: 365,
-      });
-    } catch { /* already exists */ }
-    try {
-      datasets.create({
-        name: "Sleep Quality Improvement Study",
-        description: "Sleep duration and quality metrics from Sleep Optimizer program participants.",
-        cohortId: cohortId as never,
-        dataCategories: ["measurements", "behavioral_patterns"],
-        privacyLevel: "aggregated",
-        kAnonymityThreshold: 10,
-        createdBy: participantId,
-        retentionDays: 180,
-      });
-    } catch { /* already exists */ }
-  }
+  // Use a fixed cohort ID if the async create didn't complete yet
+  const effectiveCohortId = cohortId || "coh_demo_1";
+
+  try {
+    datasets.create({
+      name: "Cardiovascular Health Outcomes",
+      description: "Anonymized dataset of cardiovascular measurement trends and program outcomes.",
+      cohortId: effectiveCohortId as never,
+      dataCategories: ["measurements", "outcomes", "demographics"],
+      privacyLevel: "pseudonymized",
+      kAnonymityThreshold: 5,
+      createdBy: participantId,
+      retentionDays: 365,
+    });
+  } catch { /* already exists */ }
+  try {
+    datasets.create({
+      name: "Sleep Quality Improvement Study",
+      description: "Sleep duration and quality metrics from Sleep Optimizer program participants.",
+      cohortId: effectiveCohortId as never,
+      dataCategories: ["measurements", "behavioral_patterns"],
+      privacyLevel: "aggregated",
+      kAnonymityThreshold: 10,
+      createdBy: participantId,
+      retentionDays: 180,
+    });
+  } catch { /* already exists */ }
 
   // Generate demo AI insights
   const insights = getInsights();
