@@ -443,6 +443,17 @@ export class AccountManager {
     return this.accounts.get(accountId)!;
   }
 
+  /** Update display name (and optionally other profile fields). */
+  updateProfile(accountId: AccountId, updates: { displayName?: string; avatarUrl?: string; locale?: string; timezone?: string }): Account {
+    const account = this.accounts.get(accountId);
+    if (!account) throw new IdentityError({ code: "eks.identity.account.not_found", category: "account_not_found", message: "Account not found." });
+    if (updates.displayName !== undefined && updates.displayName.length < 1) {
+      throw new IdentityError({ code: "eks.identity.account.invalid_name", category: "validation", message: "Display name required.", userMessage: "Display name cannot be empty." });
+    }
+    this.update(accountId, updates);
+    return this.accounts.get(accountId)!;
+  }
+
   private update(id: AccountId, updates: Partial<Account>): void {
     const existing = this.accounts.get(id);
     if (!existing) return;

@@ -2304,3 +2304,58 @@ Stage Summary:
 - 8+ new interactive actions: mission complete, habit check-in, goal update, competition join, record measurement, waitlist approve, program publish/certify, SDK scaffold, org member add/invite, consent grant/check, and more.
 - All bugs fixed: competition seed distribution, waitlist approve Prisma error, schema parsing, mission participantId mismatch.
 - 0 lint errors, 0 runtime errors, all 6 roles verified.
+
+---
+Task ID: build-ui-2
+Agent: main (claude)
+Task: Wire up Settings page + Program detail install action. Browser-verify all 6 dashboards.
+
+Work Log:
+- Browser verification (via subagent): All 6 role dashboards render successfully with zero console errors.
+  * Participant: 21 interactive elements (Complete ×4, habit + ×2, Update, Join ×3, Record)
+  * Technician: 13 interactive elements (Record Measurement, Refresh, Schedule New)
+  * Developer: 32 interactive elements (Scaffold, Certify ×5, Run ×5, View Details ×5)
+  * Researcher: 17 interactive elements (Grant Consent ×3, Export, Check Access, View Evidence)
+  * Org Admin: 14 interactive elements (Create Organization, Refresh, org accordion)
+  * Platform Admin: 36 interactive elements (role switcher ×7, Refresh, account cards, Report ×7)
+- Participant action tests all passed:
+  * Mission complete: button count decreased 4→3 (mission completed and removed)
+  * Habit check-in: streak increased 5→6
+  * Record measurement dialog: opened with form fields (type, source, value)
+- Settings page rewritten with full interactivity:
+  * Save Profile: PUT /api/identity/accounts/[id] → updates displayName (verified: "Ama Serwaa Updated")
+  * Change Password: POST /api/identity/accounts/[id]/password → changes password (verified: changed + changed back)
+  * MFA Toggle: POST /api/identity/accounts/[id]/mfa → toggles MFA (verified: enabled→disabled)
+  * Devices: fetches from /api/technicians/devices, shows device list with verified badges
+  * All actions have toast notifications, loading states, error handling
+- Added AccountManager.updateProfile() public method (was private update()).
+- Created 3 new API routes:
+  * PUT /api/identity/accounts/[id] — update profile (displayName, locale, timezone)
+  * POST /api/identity/accounts/[id]/password — change password (requires currentPassword)
+  * POST /api/identity/accounts/[id]/mfa — toggle MFA
+- Program detail page rewritten with install action:
+  * Detects if user is signed in (shows "Install" vs "Sign In to Install")
+  * POST /api/marketplace/listings/[id]/install — increments install count
+  * Shows pricing details (free tier features, premium tier features)
+  * Post-install shows success state with "Go to Dashboard" button
+  * Verified: install works (installs: 0→1), page renders 200
+- Created 1 new API route: POST /api/marketplace/listings/[id]/install
+- Lint clean throughout (0 errors).
+- Zero runtime errors across all tests.
+
+VERIFIED:
+- Profile update: ok, name updated
+- Password change: ok, changed + reverted
+- MFA toggle: ok, enabled→disabled
+- Program install: ok, installs 0→1
+- Settings page: 200
+- Program detail page: 200
+- All 6 dashboards: render with interactive elements, zero console errors
+- Participant actions: mission complete, habit check-in, record measurement all work
+
+Stage Summary:
+- Settings page: fully interactive (profile, password, MFA, devices)
+- Program detail page: install action works for signed-in users
+- All 6 role dashboards: browser-verified with interactive elements
+- 4 new API routes: PUT account, POST password, POST MFA, POST install
+- 0 lint errors, 0 runtime errors, all features verified

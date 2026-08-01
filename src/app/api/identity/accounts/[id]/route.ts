@@ -1,3 +1,4 @@
+import { NextRequest } from "next/server";
 import { withPlatform, getAccounts, ensurePlatform } from "@/lib/platform-server";
 import { IdentityError } from "@/identity";
 
@@ -23,4 +24,22 @@ export function GET(_req: Request, { params }: { params: Promise<{ id: string }>
       lastSignInAt: account.lastSignInAt,
     };
   });
+}
+
+// Update account (display name, locale, timezone)
+export async function PUT(req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  ensurePlatform();
+  const { id } = await params;
+  const body = await req.json() as { displayName?: string; locale?: string; timezone?: string };
+  try {
+    const account = getAccounts().updateProfile(id as never, {
+      displayName: body.displayName,
+      locale: body.locale,
+      timezone: body.timezone,
+    });
+    return Response.json({ ok: true, data: { id: account.id, displayName: account.displayName } });
+  } catch (err) {
+    const e = err as { userMessage?: string; message?: string };
+    return Response.json({ ok: false, error: { message: e.userMessage ?? e.message ?? "Update failed" } }, { status: 400 });
+  }
 }
