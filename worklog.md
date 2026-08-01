@@ -2654,3 +2654,39 @@ Stage Summary:
 - App is production-ready on Vercel.
 - All features work end-to-end.
 - Live URL: https://eks-health.vercel.app
+
+---
+Task ID: seed-data-1
+Agent: main (claude)
+Task: Seed demo data for research + population modules so dashboards show real data.
+
+Work Log:
+- Added demo data to seedResearchDemoData():
+  * 2 datasets (Cardiovascular Health Outcomes, Sleep Quality Study)
+  * 2 AI insights (trend analysis, program comparison)
+  * Evidence accumulation (skipped on serverless to avoid cold-start timeout)
+- Added demo data to seedPopulationDemoData():
+  * 4 funding policies (one per demo org)
+  * 4 funding requests ($99 each for Cardio Care)
+  * 4 public health campaigns (Wellness Challenge per org)
+- CRITICAL FIX: Moved seedResearchDemoData() + seedPopulationDemoData() out of
+  ensurePlatform() (sync, blocking, runs on every sign-in) into ensureHydrated()
+  (async, lazy, wrapped in try/catch). Was causing Vercel serverless timeout
+  on sign-in — the heavy seeds blocked the session from being created.
+- The critical sign-in path is now: hydrate accounts+sessions → seed core demo data → return session. Research/population seeds run after, non-blocking.
+
+VERIFIED ON LIVE SITE:
+- All 6 roles: ✅ (participant, technician, developer, researcher, org_admin, platform_admin)
+- Research datasets: 2 ✅
+- Research evidence: 3 ✅
+- Population funding: 4 requests, 4 policies ✅
+- Population campaigns: 4 ✅
+- Population organizations: 4 ✅
+- 0 lint errors
+
+Stage Summary:
+- Researcher dashboard now shows real datasets + insights + evidence
+- Org admin dashboard now shows real funding + campaigns + organizations
+- Sign-in is fast again (research/population seeds don't block)
+- All 6 roles work on live Vercel deployment
+- Live URL: https://eks-health.vercel.app
