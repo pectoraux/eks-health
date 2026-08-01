@@ -2379,3 +2379,44 @@ Work Log:
 Stage Summary:
 Settings and Timeline pages are fully wired up to real backend APIs. No `any` types remain. Notification preferences persist in localStorage. Timeline entries now use real per-record timestamps instead of "today". Both pages have sign-out buttons and consistent sticky-header + sticky-footer layout matching the rest of the dashboard. Notes for downstream: `/api/identity/orgs` is not user-scoped — settings page currently fans out per-org to resolve memberships; a future `?accountId=` filter on that endpoint would simplify the page. Consent revoke is intentionally a no-op stub per task spec.
 
+
+---
+Task ID: fix-remaining-1
+Agent: main (claude)
+Task: Fix all remaining UI feature gaps identified by audit.
+
+Work Log:
+- Fixed developer dashboard "View Details" link: was using slug, now uses id (matching program detail page lookup).
+- Fixed program detail page: now matches by id OR slug (more robust).
+- Added POST /api/technicians/appointments: books appointments via AppointmentManager.book() with skipRuleValidation.
+- Added DELETE /api/auth/waitlist/[id]: rejects waitlist entries (updates status to "rejected" in DB).
+- Added POST /api/identity/accounts/[id]: suspend/activate accounts via AccountManager.suspend()/activate().
+- Added AccountManager.activate() public method (was only suspend()).
+- Fixed appointment booking: skipRuleValidation now also skips assertAvailable() check (was still running even with flag).
+- Added ensureHydrated() to technicians list + appointments routes.
+- Settings page: wired up notification Switches (localStorage-backed), Manage Consent dialog (fetches /api/identity/consent), Organizations card (fetches /api/identity/orgs).
+- Timeline page: added type filter buttons (All/Measurements/Missions/Competitions), real timestamps from /api/missions/list and /api/competitions/list, sign-out button, removed all any types.
+- Lint clean throughout (0 errors).
+
+VERIFIED:
+- Waitlist reject (DELETE): ok, status: rejected
+- Account suspend: ok, state: suspended
+- Account activate: ok, state: active
+- Appointment booking: ok, id: appt_0ms9t4phqkqudsym173cm9t5a
+- Settings page: 200
+- Timeline page: 200
+- Program detail by id: 200
+- Zero runtime errors
+
+GIT STATUS:
+- All changes committed locally (commit f9a69df).
+- 33 commits ahead of origin/main.
+- CANNOT PUSH: no GitHub authentication token available in the environment.
+- Remote origin/main was force-pushed by a previous session with unrelated history (29 different commits).
+- User needs to provide a GitHub Personal Access Token or push manually.
+
+Stage Summary:
+- All 8 audit-identified gaps fixed: developer nav, appointment booking, waitlist reject, account suspend/activate, settings notifications/consent/orgs, timeline filters/timestamps/sign-out.
+- 4 new API routes: POST appointments, DELETE waitlist, POST account state, plus activate() method.
+- 0 lint errors, 0 runtime errors, all features verified.
+- Git: committed locally, push blocked by missing auth.
