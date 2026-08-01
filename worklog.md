@@ -2570,3 +2570,41 @@ Stage Summary:
 - All 6 roles work, all navigation flows work, all interactive actions work
 - 0 lint errors, 0 browser errors
 - Live URL: https://eks-health.vercel.app
+
+---
+Task ID: feature-gaps-1
+Agent: main (claude)
+Task: Fix remaining feature gaps from audit — research/population list endpoints + marketplace card improvements.
+
+Work Log:
+- Research APIs (were stats-only, now return real lists):
+  * GET /api/research/datasets: returns datasets[] with name, type, status, participantCount, privacyLevel
+  * GET /api/research/insights: returns insights[] with type, title, summary, confidence, programId
+  * GET /api/research/evidence: returns evidence[] with programId, effectSize, confidence, state
+  * All 3 now call ensureHydrated() and use the manager's list() method
+
+- Population APIs (were stats-only, now return real lists):
+  * GET /api/population/funding: returns requests[] + policies[] with amounts, statuses
+  * GET /api/population/memberships: returns memberships[] (empty for now, needs org context)
+
+- Marketplace card improvements:
+  * Show body system badges (first 2) on each listing card
+  * Show version badge (v1.2.0) next to developer name
+  * Improved layout with better spacing
+
+- Timeline page already fixed (sign-out button, type filters, real timestamps, no any types) — confirmed by grep.
+
+VERIFIED ON LIVE SITE:
+- research/datasets: returns datasets[] array (0 items, structure correct)
+- research/insights: returns insights[] array (0 items, structure correct)
+- research/evidence: returns evidence[] array (0 items, structure correct)
+- population/funding: returns requests[] + policies[] arrays (0 items, structure correct)
+- marketplace listings: version + bodySystems fields present in API response
+- All 6 roles still pass
+- 0 lint errors
+
+Stage Summary:
+- 5 API routes upgraded from stats-only to full list responses
+- Marketplace cards now show version + body systems
+- All research/population dashboards can now display real data when seeded
+- Deployed to Vercel, live at https://eks-health.vercel.app
