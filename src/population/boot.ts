@@ -74,6 +74,8 @@ export function seedPopulationDemoData(): { orgIds: PopulationOrgId[] } {
   const hierarchy = getHierarchy();
   const memberships = getMemberships();
   const privacy = getPrivacyFirewall();
+  const funding = getFunding();
+  const campaigns = getCampaigns();
   const orgIds: PopulationOrgId[] = [];
   const demoOrgs = [
     { name: "Ministry of Health Ghana", slug: "moh-ghana", type: "government" as const, tier: "government" as const, country: "GH", region: "Greater Accra" },
@@ -91,6 +93,52 @@ export function seedPopulationDemoData(): { orgIds: PopulationOrgId[] } {
       hierarchy.incrementMemberCount(org.id, true);
       // Grant aggregate_performance visibility
       privacy.grant({ participantId: asAccountId("acc_demo_1"), orgId: org.id, grantType: "aggregate_performance", purpose: "Organization wellness analytics", scope: ["aggregate_improvement", "mission_completion_rate"], expiryDays: 365 });
+
+      // Create funding policy for this org
+      let policyId: string | undefined;
+      try {
+        const policy = funding.createPolicy({
+          orgId: org.id,
+          name: `${d.name} Wellness Fund`,
+          description: `Funding policy for ${d.name} employee/participant wellness programs`,
+          targetType: "program_subscription" as never,
+          maxAmountPerParticipant: 500,
+          maxAmountTotal: 50000,
+          currency: "USD",
+          eligibilityCriteria: ["active_member"],
+          active: true,
+        });
+        policyId = policy.id;
+      } catch { /* already exists */ }
+
+      // Create a funding request
+      if (policyId) {
+        try {
+          funding.request({
+            policyId: policyId as never,
+            participantId: asAccountId("acc_demo_1"),
+            targetType: "program_subscription" as never,
+            amount: 99,
+            purpose: "Cardio Care program subscription",
+            metadata: { programId: "prg_cardio_care" },
+          });
+        } catch { /* already exists */ }
+      }
+
+      // Create a public health campaign
+      try {
+        campaigns.create({
+          name: `${d.name} Wellness Challenge`,
+          description: `Annual wellness challenge for ${d.name} members`,
+          orgId: org.id,
+          scope: "organizational",
+          startDate: new Date().toISOString(),
+          endDate: new Date(Date.now() + 90 * 86400000).toISOString(),
+          targetPrograms: ["prg_cardio_care" as never],
+          participationGoal: 100,
+          status: "active" as never,
+        });
+      } catch { /* already exists */ }
     } catch { /* already exists */ }
   }
   _seeded = true;

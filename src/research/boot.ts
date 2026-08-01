@@ -78,5 +78,78 @@ export function seedResearchDemoData(): void {
   try { consent.grant({ participantId, type: "anonymous_research", purpose: "Contribute anonymized data to general health research", scope: ["measurements", "outcomes"], grantedBy: participantId }); } catch { /* */ }
   try { consent.grant({ participantId, type: "program_improvement", purpose: "Help improve the programs I use", scope: ["measurements", "mission_completion", "competition_results"], grantedBy: participantId }); } catch { /* */ }
   try { consent.grant({ participantId, type: "ai_training", purpose: "Help train better AI health coaches", scope: ["measurements", "behavioral_patterns"], grantedBy: participantId }); } catch { /* */ }
+
+  // Create demo datasets
+  const datasets = getDatasets();
+  const cohorts = getCohorts();
+  let cohortId: string | undefined;
+  try {
+    const cohort = cohorts.create({
+      name: "Cardio Care Participants",
+      description: "Participants using the Cardio Care program",
+      criteria: { programIds: ["prg_cardio_care"] },
+      createdBy: participantId,
+    });
+    cohortId = cohort.id;
+  } catch { /* already exists */ }
+
+  if (cohortId) {
+    try {
+      datasets.create({
+        name: "Cardiovascular Health Outcomes",
+        description: "Anonymized dataset of cardiovascular measurement trends and program outcomes.",
+        cohortId: cohortId as never,
+        dataCategories: ["measurements", "outcomes", "demographics"],
+        privacyLevel: "pseudonymized",
+        kAnonymityThreshold: 5,
+        createdBy: participantId,
+        retentionDays: 365,
+      });
+    } catch { /* already exists */ }
+    try {
+      datasets.create({
+        name: "Sleep Quality Improvement Study",
+        description: "Sleep duration and quality metrics from Sleep Optimizer program participants.",
+        cohortId: cohortId as never,
+        dataCategories: ["measurements", "behavioral_patterns"],
+        privacyLevel: "aggregated",
+        kAnonymityThreshold: 10,
+        createdBy: participantId,
+        retentionDays: 180,
+      });
+    } catch { /* already exists */ }
+  }
+
+  // Generate demo AI insights
+  const insights = getInsights();
+  try {
+    insights.generate({
+      type: "trend" as never,
+      createdBy: participantId,
+      programId: "prg_cardio_care" as never,
+      metric: "resting_heart_rate",
+      categoryFocus: "cardiovascular",
+      areaOfInterest: "improvement_over_30_days",
+      horizonDays: 30,
+    });
+  } catch { /* */ }
+  try {
+    insights.generate({
+      type: "comparison" as never,
+      createdBy: participantId,
+      programIds: ["prg_cardio_care", "prg_sleep_optimizer"] as never,
+      metric: "participant_engagement",
+      areaOfInterest: "program_effectiveness",
+      horizonDays: 90,
+    });
+  } catch { /* */ }
+
+  // Trigger evidence accumulation for demo programs (async, fire-and-forget)
+  const evidence = getEvidenceEngine();
+  const demoProgramIds = ["prg_cardio_care", "prg_sleep_optimizer", "prg_fit_streak"];
+  for (const pid of demoProgramIds) {
+    void evidence.accumulate(pid as never).catch(() => { /* graceful */ });
+  }
+
   _seeded = true;
 }
