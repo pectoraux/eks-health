@@ -119,11 +119,19 @@ export default function MarketplacePage() {
                     </div>
                     <Badge variant="outline" className="text-[10px] ml-2 shrink-0">{l.pricing.type === "free" ? "Free" : l.pricing.price ? `$${l.pricing.price}` : l.pricing.type}</Badge>
                   </div>
-                  <div className="flex flex-wrap gap-1 mb-3">
+                  <div className="flex flex-wrap gap-1 mb-2">
                     {l.healthGoals.slice(0, 3).map(g => <Badge key={g} variant="secondary" className="text-[9px]">{g}</Badge>)}
                   </div>
+                  {l.bodySystems?.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-3">
+                      {l.bodySystems.slice(0, 2).map((b: string) => <Badge key={b} variant="outline" className="text-[9px] capitalize">{b}</Badge>)}
+                    </div>
+                  )}
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
-                    <span>{l.developerName}</span>
+                    <div className="flex items-center gap-2">
+                      <span>{l.developerName}</span>
+                      <Badge variant="outline" className="text-[9px]">v{l.version}</Badge>
+                    </div>
                     <span>{l.installCount} installs</span>
                   </div>
                 </CardContent>
