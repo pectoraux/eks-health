@@ -2723,3 +2723,37 @@ FINAL STATUS:
 - Pushed to GitHub: https://github.com/pectoraux/eks-health
 
 The app is production-ready with all features implemented and verified.
+
+---
+Task ID: stub-cleanup-1
+Agent: main (claude)
+Task: Remove all stale 'not implemented' messages — backends all exist.
+
+Work Log:
+- Comprehensive stub audit found 3 high-priority issues: UI messages claiming
+  "not yet implemented" for backends that actually DO exist.
+- Fixed platform-admin-dashboard.tsx:
+  * Waitlist reject: removed 405/404 fallback + "not yet implemented" toast.
+    Backend DELETE /api/auth/waitlist/[id] exists and works.
+  * Account suspend/activate: removed "Account state API not yet implemented" toast.
+    Backend POST /api/identity/accounts/[id] exists and works.
+  * Updated dialog text: "local-only" → "permanent action", "not-implemented error" → "takes effect immediately"
+- Fixed technician-dashboard.tsx:
+  * Replaced ScheduleFormStub (local-only, never POSTed) with real ScheduleForm.
+  * Now POSTs to /api/technicians/appointments (already implemented).
+  * Shows success toast with appointment ID, calls onRefresh.
+  * Added onRefresh prop to AppointmentsCard.
+- Backend placeholders (revenue=0, responseRate=0, AI placeholder) are honest
+  and documented — left as-is.
+
+VERIFIED ON LIVE SITE:
+- All 6 roles: ✅ pass
+- Stale "not yet implemented" strings: 0
+- 0 lint errors
+- Deployed to Vercel
+
+Stage Summary:
+- All 3 stale "not implemented" messages removed
+- ScheduleFormStub replaced with real ScheduleForm that POSTs to the API
+- All UI features now correctly call their (existing) backend APIs
+- No false "not implemented" warnings shown to users
